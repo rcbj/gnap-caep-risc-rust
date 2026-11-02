@@ -26,7 +26,7 @@ Tests use an in-process stub on 127.0.0.1. They do not need a live authorization
 
 `.github/workflows/nightly.yml` runs the unit image and the live script at 06:59 UTC (`59 6 * * *`). Do not add a schedule to `tests.yml`.
 
-The driver copies the checkout to a scratch context (no `.git`, `target`, `demo/generated`), runs the install script there, then builds the demo image, asserts the image's `/app/demo/generated` is exactly `tlsCa`'s chain, and runs it with only `client.key` and `client.crt` mounted and `TLS_CA_REFRESH=0`. It never fetches the CA for the demo, rewrites `tlsCa`, or mounts a CA. Its progress lines never print a URL or status from the signed-in client (CodeQL clear-text logging); secrets reach `docker run` as `-e NAME`.
+The driver copies the checkout to a scratch context (no `.git`, `target`, `demo/generated`), runs the install script there, then builds the demo image, asserts the image's `/app/demo/generated` is exactly `tlsCa`'s chain, and runs it with only `client.key` and `client.crt` mounted and `TLS_CA_REFRESH=0`. It never fetches the CA for the demo, rewrites `tlsCa`, or mounts a CA. Its progress lines never print a URL or status from the signed-in client (CodeQL clear-text logging); secrets reach `docker run` as `-e NAME`. The install script never prints a password or secret: a generated test-user password goes to `demo/generated/<user>.password` (created 0600) and only that path is printed. Every `ssl` context in `scripts/` sets TLS 1.2 as the minimum.
 
 The registrar passes over only a `set-custom-claim` refusal that says "not one of" (an iya-sts without the `gnap_access_token` claim set). Any other refusal fails.
 

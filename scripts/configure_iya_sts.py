@@ -49,8 +49,10 @@ def usage():
                   URI follows the running demo's PORT, then $PORT. A non-loopback finish URI is
                   left as written.
   --test-user     The test user to create (default: gnap-demo-user). Its password is
-                  $GNAP_DEMO_USER_PASSWORD, or one is generated and printed once. With that variable
-                  set, an existing user's password is replaced.
+                  $GNAP_DEMO_USER_PASSWORD, or one is generated and written to
+                  generated/<user>.password beside the configuration (mode 0600); only the
+                  path is printed. With that variable set, an existing user's password is
+                  replaced.
   --no-test-user  Do not create a test user.
   --dry-run       Print what would be done, and send nothing.
 
@@ -575,7 +577,16 @@ def main(argv=None):
                 raise RuntimeError(f"creating {args['test_user']} was refused: {json.dumps(made['body'])[:300]}")
             print(f"Created user {args['test_user']}.")
             if made["body"].get("password"):
-                print(f"Generated password for {args['test_user']} (shown once): {made['body']['password']}")
+                # Never printed: a password does not belong in a log. It goes to a file only its
+                # owner can read, created 0600, in demo/generated beside the client key, which
+                # never enters an image (.dockerignore admits only tlsCa's chain).
+                saved = Path(args["config"]).resolve().parent / "generated" / f"{args['test_user']}.password"
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    out.write(f"{made['body']['password']}\n")
+                print(f"Generated a password for {args['test_user']}; it is in {saved} (readable by you only).")
         for call in plan:
             if not call["path"].endswith("/groups/add-member"):
                 continue

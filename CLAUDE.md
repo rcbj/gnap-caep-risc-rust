@@ -13,8 +13,10 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 ## Tests
 
 ```bash
-cargo test
+docker build --target test .
 ```
+
+The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
 Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
 
@@ -27,7 +29,7 @@ Tests use an in-process stub on 127.0.0.1. They do not need a live authorization
 
 ## Demo
 
-`cargo run --bin demo`. `PORT` defaults to 3000 and is the bind port. Loopback redirect and finish URLs follow `PORT`. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. `ssf.pollIntervalMs` is a millisecond interval.
+`docker compose up --build`. `PORT` defaults to 3000 and is the bind port. Loopback redirect and finish URLs follow `PORT`. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. `ssf.pollIntervalMs` is a millisecond interval.
 
 ## Signals
 

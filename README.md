@@ -4,11 +4,13 @@ A server-side [GNAP](https://www.rfc-editor.org/rfc/rfc9635) client. The key is 
 
 The private key stays in this process. The same `gnap.json` shape as the Python and Node libraries loads: the JSON keys are identical.
 
-## Install from a checkout
+## Build and tests
 
 ```bash
-cargo test
+docker build --target test .
 ```
+
+The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
 Crate name: `gnap-caep-risc`. A crates.io publish is not set up.
 
@@ -35,7 +37,7 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 ## Demo
 
 ```bash
-cargo run --bin demo
+docker compose up --build
 ```
 
 `PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant, `/callback` finishes it, and `POST /logout` signs out.

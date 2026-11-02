@@ -50,6 +50,25 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 
 `--dry-run` prints the admin API calls and sends nothing. When the `gnap-demo` container is running, its `PORT` wins over the shell `PORT`.
 
+## Live test against iya-sts
+
+```bash
+python3 scripts/live_iya_sts.py
+```
+
+The script starts the latest `main` of iya-sts in memory mode (no persistence, no clustering, no request workers), registers the demo, signs in through it over GNAP with mutual TLS, emits a CAEP credential-change and then a session-revoked event, and requires the demo's `GET /live-status` to show both, with the second ending the local session. It prints JSON that ends `{"ok": true ...}`.
+
+It needs only Docker and the host's `python3` standard library. The client key (openssl) and the registration (`scripts/configure_iya_sts.py`) run in the `tools` image as the invoking user; the demo runs in its own image. Cargo never runs on the host.
+
+- `IYA_STS_URL` uses an iya-sts that is already running and does not stop it.
+- `IYA_STS_IMAGE` starts a fresh container from that image.
+- Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
+- `LIVE_STS_PORT` (default 18515) and `LIVE_DEMO_PORT` (default 18615) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
+
+A registered GNAP key is not replaced, so run it against a fresh iya-sts each time.
+
+The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
+
 ## License
 
 MIT. Copyright (c) 2026 Iya CyberSecurity Solutions, LLC.

@@ -20,6 +20,16 @@ The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses tha
 
 Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
 
+## Live test
+
+`python3 scripts/live_iya_sts.py` signs the demo in to a fresh iya-sts `main` and checks two CAEP events through `GET /live-status` (`signedIn`, `subject`, `receiver`, `events` of `type` and `jti`; never a token). It runs openssl and `scripts/configure_iya_sts.py` in the `tools` stage as the invoking user, never Cargo on the host. Environment: `IYA_STS_URL`, `IYA_STS_IMAGE`, `LIVE_STS_PORT` (18515), `LIVE_DEMO_PORT` (18615). Never bind 3000, 8081 or 18481-18495. Always a fresh iya-sts: a registered GNAP key is not replaced and the second run is refused.
+
+`.github/workflows/nightly.yml` runs the unit image and the live script at 06:59 UTC (`59 6 * * *`). Do not add a schedule to `tests.yml`.
+
+The registrar passes over only a `set-custom-claim` refusal that says "not one of" (an iya-sts without the `gnap_access_token` claim set). Any other refusal fails.
+
+The demo source is `src/bin/demo.rs`. `.gitignore` ignores `/bin/` at the root only, so the demo is tracked.
+
 ## Layout
 
 - `src` the client, key proofs (mtls, httpsig, jwsd), and one poll stream

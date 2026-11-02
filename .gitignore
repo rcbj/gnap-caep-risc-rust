@@ -1,0 +1,8 @@
+target/
+bin/
+obj/
+demo/generated/
+venv/
+.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,24 @@
+{
+  "grantEndpoint": "https://localhost:8081/gnap",
+  "transmitterIssuer": "https://localhost:8081",
+  "idTokenIssuer": "https://localhost:8081",
+  "application": "gnap-caep-risc-demo",
+  "display": {
+    "name": "GNAP CAEP RISC demo",
+    "uri": "http://localhost:3000/"
+  },
+  "access": ["ssf.read", "ssf.manage"],
+  "subIdFormats": ["iss_sub", "account", "opaque"],
+  "assertionFormats": ["id_token"],
+  "keyProof": "mtls",
+  "privateKey": "file:generated/client.key",
+  "certificate": "file:generated/client.crt",
+  "finishUri": "http://localhost:3000/callback",
+  "finishMethod": "redirect",
+  "interactionStart": ["redirect"],
+  "tlsCa": "generated/idp-ca.pem",
+  "ssf": {
+    "transmitter": "https://localhost:8081",
+    "pollIntervalMs": 3000
+  }
+}

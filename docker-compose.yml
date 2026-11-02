@@ -1,0 +1,10 @@
+services:
+  gnap-demo:
+    build: .
+    image: gnap-caep-risc-rust-demo
+    network_mode: host
+    environment:
+      PORT: ${PORT:-3000}
+    volumes:
+      - ./demo/generated:/app/demo/generated
+    stop_grace_period: 5s

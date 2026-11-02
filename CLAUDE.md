@@ -39,4 +39,4 @@ Omitted or `true` keeps CAEP and RISC on, and the resolved configuration omits `
 
 MIT. Copyright (c) 2026 Iya CyberSecurity Solutions, LLC.
 
-`develop` and `main` must be the same commit. Publishing is not set up.
+`develop` and `main` must be the same commit. A pull request merged into `main` publishes the crate to crates.io after the test workflow succeeds on that commit. A direct push does not. The token is the `CARGO_REGISTRY_TOKEN` repository secret. A version already on crates.io stays there; the next release is a new `version` in `Cargo.toml`.

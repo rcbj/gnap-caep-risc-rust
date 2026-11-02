@@ -2,9 +2,15 @@
 name = "gnap-caep-risc"
 version = "0.1.0"
 edition = "2021"
-publish = false
 license = "MIT"
+authors = ["rcbjBlueMars <9321971+rcbjBlueMars@users.noreply.github.com>"]
 description = "Server-side GNAP client with one CAEP and RISC poll receiver"
+repository = "https://github.com/rcbj/gnap-caep-risc-rust"
+homepage = "https://github.com/rcbj/gnap-caep-risc-rust"
+documentation = "https://docs.rs/gnap-caep-risc"
+readme = "README.md"
+keywords = ["gnap", "caep", "risc", "oauth", "ssf"]
+categories = ["authentication"]
 
 [dependencies]
 base64 = "0.22"

@@ -50,6 +50,8 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 
 `--dry-run` prints the admin API calls and sends nothing.
 
+The script never prints a password or secret. When it generates the test user's password it writes it to `demo/generated/<user>.password` (created 0600) and prints only that path.
+
 ### The iya-sts trust chain: `tlsCa`
 
 `tlsCa` (demo default `generated/idp-ca.pem`, relative to `demo/`) is the iya-sts TLS listener CA trust chain the library verifies the listener against. The install script, `scripts/configure_iya_sts.py`, writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS Issuing CA, Intermediate, Root), or the chain the TLS handshake presents when that is missing. It prints the path, the trust anchor's subject and its SHA-256.

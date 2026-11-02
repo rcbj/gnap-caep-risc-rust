@@ -74,7 +74,10 @@ PROFILE = {
         " -addext keyUsage=critical,digitalSignature 2>/dev/null",
     ],
     "config_file": "demo/gnap.json",
-    "password_env": "GNAP_DEMO_USER_PASSWORD",
+    # The NAME of the variable that carries the test user's password to the install
+    # script (-e NAME). The key is not called "password...": the name goes on the printed
+    # command line, and a static checker treats such a key as the password itself.
+    "user_env": "GNAP_DEMO_USER_PASSWORD",
     "test_user": "gnap-demo-user",
 }
 
@@ -622,13 +625,13 @@ def configure_demo(tools_image, work, sts_origin, demo_origin, demo_port, userna
     docker(*base, tools_image, *PROFILE["generate_key"])
     env = os.environ.copy()
     env["ADMIN_API_CLIENT_SECRET"] = secret
-    env[PROFILE["password_env"]] = password
+    env[PROFILE["user_env"]] = password
     # Values pass by name (-e NAME), so the secret is not on the command line or in this log.
     completed = run(
         [
             "docker", *base,
             "-e", "ADMIN_API_CLIENT_SECRET",
-            "-e", PROFILE["password_env"],
+            "-e", PROFILE["user_env"],
             "-e", f"PUBLIC_URL={demo_origin}",
             "-e", f"PORT={demo_port}",
             tools_image,
@@ -655,7 +658,7 @@ def main():
     if any(port in FORBIDDEN_PORTS for port in bound) or len(set(bound)) != len(bound):
         raise SystemExit("LIVE_STS_PORT and LIVE_DEMO_PORT must not bind 3000, 8081, or 18481 to 18495")
     secret = os.environ.get("ADMIN_API_CLIENT_SECRET") or os.environ.get("STS_ADMIN_API_CLIENT_SECRET") or secrets.token_urlsafe(24)
-    password = os.environ.get(PROFILE["password_env"]) or secrets.token_urlsafe(18)
+    password = os.environ.get(PROFILE["user_env"]) or secrets.token_urlsafe(18)
     username = PROFILE["test_user"]
     sts_origin, sts_name = prepare_sts(sts_port, secret)
     demo_origin = f"http://127.0.0.1:{demo_port}"

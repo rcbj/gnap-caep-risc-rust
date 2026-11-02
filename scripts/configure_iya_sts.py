@@ -22,7 +22,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from redirects import demo_port, redirects_for  # noqa: E402
-from trust_chain import save_trust_chain, trust_path  # noqa: E402
+from trust_chain import save_trust_chain, trust_path, unverified_context  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -297,7 +297,6 @@ def plan_for(files, base, test_user, key_json):
 def _send(url, method, headers, body):
     """POST or GET with verification off. The registrar talks to a local iya-sts listener."""
     import http.client
-    import ssl
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise RuntimeError(f"{url} is not an http(s) URL")
@@ -311,7 +310,7 @@ def _send(url, method, headers, body):
         outgoing["content-length"] = str(len(payload))
     try:
         if parts.scheme == "https":
-            conn = http.client.HTTPSConnection(parts.hostname, port, context=ssl._create_unverified_context(), timeout=15)
+            conn = http.client.HTTPSConnection(parts.hostname, port, context=unverified_context(), timeout=15)
         else:
             conn = http.client.HTTPConnection(parts.hostname, port, timeout=15)
         conn.request(method, path, body=payload, headers=outgoing)
@@ -497,6 +496,7 @@ def main(argv=None):
         print(f"  trust anchor {chain['anchor_subject']}")
         print(f"  sha256 {chain['anchor_fingerprint']}")
         print("  Compare the anchor with the Root CA on iya-sts's Server configuration, PKI page.")
+        print("  The demo image build copies that chain in. Rebuild it after running this against another iya-sts.")
     secret = os.environ.get("ADMIN_API_CLIENT_SECRET") or os.environ.get("STS_ADMIN_API_CLIENT_SECRET") or ""
     if not secret:
         raise RuntimeError("neither ADMIN_API_CLIENT_SECRET nor STS_ADMIN_API_CLIENT_SECRET is set, so no /admin-api token can be minted.")

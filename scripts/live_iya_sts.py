@@ -21,6 +21,15 @@ stop it. This script never removes iya-sts-live-main, iya-sts-live-probe, or a
 container whose name starts with sts. Otherwise it clones main (or builds
 IYA_STS_SRC) and removes only the container it started, iya-sts-live-gnap-caep-risc-rust.
 The demo container it removes is gnap-caep-risc-rust-live-demo.
+
+The trust chain goes in the way a user's does. The script copies this checkout
+to a scratch build context (without .git, target or demo/generated), generates
+the client key and runs the install script there, which writes the listener CA
+trust chain to the file tlsCa names, and only then builds the demo image, which
+carries that file from build time. The demo container gets no CA mount (only
+the client key and certificate, one file each) and does not refresh the chain
+at start (TLS_CA_REFRESH=0). tlsCa is never rewritten. This script reads the
+saved chain for its own HTTPS client.
 """
 
 import base64
@@ -125,6 +134,7 @@ class Client:
     def __init__(self, ca_file):
         self.jar = http.cookiejar.CookieJar(policy=LoopbackCookiePolicy())
         self.ssl = ssl.create_default_context(cafile=str(ca_file))
+        self.ssl.minimum_version = ssl.TLSVersion.TLSv1_2
 
     def request(self, method, url, body=None, headers=None, timeout=60):
         parts = urllib.parse.urlsplit(url)
@@ -221,19 +231,41 @@ def wait_port(port, timeout):
     raise RuntimeError(f"127.0.0.1:{port} did not accept a connection")
 
 
-def fetch_ca(origin, dest):
+def wait_ready(origin, timeout):
+    """Wait for iya-sts discovery to answer. Readiness only: nothing is trusted from it."""
     parts = urllib.parse.urlsplit(origin)
     context = ssl._create_unverified_context()
-    conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443, context=context, timeout=30)
-    try:
-        conn.request("GET", "/tls/server-certificate")
-        response = conn.getresponse()
-        body = response.read()
-    finally:
-        conn.close()
-    if response.status != 200 or b"BEGIN CERTIFICATE" not in body:
-        raise RuntimeError(f"GET /tls/server-certificate answered {response.status}")
-    dest.write_bytes(body)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443, context=context, timeout=10)
+        try:
+            conn.request("GET", "/.well-known/openid-configuration")
+            response = conn.getresponse()
+            response.read()
+            if response.status == 200:
+                return
+            last = f"answered {response.status}"
+        except OSError as err:
+            last = str(err)
+        finally:
+            conn.close()
+        time.sleep(2)
+    raise RuntimeError(f"{origin} discovery did not answer 200: {last}")
+
+
+def copy_context(dest):
+    """This checkout as a build context, without .git, target, or demo/generated."""
+    clutter = {".git", "target", "__pycache__", ".venv", "venv"}
+
+    def ignore(directory, names):
+        skipped = {name for name in names if name in clutter}
+        if Path(directory).resolve() == (ROOT / "demo").resolve() and "generated" in names:
+            skipped.add("generated")
+        return skipped
+
+    shutil.copytree(ROOT, dest, ignore=ignore)
 
 
 def _swap_origin(value, origin):
@@ -248,6 +280,7 @@ def _localhost_8081(value):
 
 
 def rewrite_config(source, dest, sts_origin, demo_origin):
+    """Point the demo at this iya-sts and this demo origin. tlsCa is left alone."""
     raw = json.loads(source.read_text(encoding="utf-8"))
     sts = sts_origin.rstrip("/")
     demo = demo_origin.rstrip("/")
@@ -314,27 +347,22 @@ class Driver:
         return origin_of(url).rstrip("/") == self.sts_origin
 
     def get(self, url):
-        status, headers, payload = self.client.request("GET", url, headers={"accept": "text/html,application/json"})
-        print(f"GET {status} {url}", flush=True)
-        return status, headers, payload
+        return self.client.request("GET", url, headers={"accept": "text/html,application/json"})
 
     def post_json(self, url, body, csrf):
         raw = json.dumps(body).encode()
-        status, headers, payload = self.client.request("POST", url, body=raw, headers={
+        return self.client.request("POST", url, body=raw, headers={
             "accept": "application/json",
             "content-type": "application/json",
             "origin": self.sts_origin,
             "x-csrf-token": csrf,
         })
-        print(f"POST {status} {url}", flush=True)
-        return status, headers, payload
 
     def open_view(self, shell_url, api_url):
         status, headers, payload = self.get(shell_url)
         if status in (301, 302, 303, 307, 308):
             return {"redirect": resolve_url(shell_url, one_header(headers, "location"))}
         view_status, _headers, view_payload = self.client.request("GET", api_url, headers={"accept": "application/json"})
-        print(f"GET {view_status} {api_url}", flush=True)
         parsed = json_body(view_payload) or {}
         if view_status in (301, 302, 303, 307, 308):
             return {"redirect": resolve_url(api_url, one_header(_headers, "location"))}
@@ -384,7 +412,6 @@ class Driver:
                 "content-type": "application/x-www-form-urlencoded",
                 "origin": origin_of(url),
             })
-            print(f"POST {posted} {action}", flush=True)
             if posted in (301, 302, 303, 307, 308):
                 return resolve_url(action, one_header(post_headers, "location"))
             if origin_of(action).rstrip("/") == self.demo_origin:
@@ -621,8 +648,8 @@ def configure_demo(tools_image, work, sts_origin, demo_origin, demo_port, userna
 
 
 def main():
-    sts_port = int(os.environ.get("LIVE_STS_PORT") or 18515)
-    demo_port = int(os.environ.get("LIVE_DEMO_PORT") or 18615)
+    sts_port = int(os.environ.get("LIVE_STS_PORT") or 18558)
+    demo_port = int(os.environ.get("LIVE_DEMO_PORT") or 18658)
     sts_given = bool(os.environ.get("IYA_STS_URL", "").strip())
     bound = [demo_port] if sts_given else [sts_port, demo_port]
     if any(port in FORBIDDEN_PORTS for port in bound) or len(set(bound)) != len(bound):
@@ -638,31 +665,42 @@ def main():
     work = Path(tempfile.mkdtemp(prefix=PROFILE["repo"] + "-live-"))
     try:
         wait_port(urllib.parse.urlsplit(sts_origin).port or 443, 120)
-        ca_file = work / "idp-ca.pem"
-        deadline = time.time() + 90
-        last_error = None
-        while time.time() < deadline:
-            try:
-                fetch_ca(sts_origin, ca_file)
-                last_error = None
-                break
-            except Exception as err:
-                last_error = err
-                time.sleep(2)
-        if last_error:
-            raise last_error
-        config = work / "gnap.json"
-        rewrite_config(ROOT / PROFILE["config_file"], config, sts_origin, demo_origin)
-        docker("build", "--target", "tools", "-t", tools_image, str(ROOT))
-        configure_demo(tools_image, work, sts_origin, demo_origin, demo_port, username, password, secret)
-        docker("build", "-t", image, str(ROOT))
+        wait_ready(sts_origin, 90)
+        context = work / "context"
+        copy_context(context)
+        config = context / PROFILE["config_file"]
+        rewrite_config(config, config, sts_origin, demo_origin)
+        tls_ca = json.loads(config.read_text(encoding="utf-8")).get("tlsCa")
+        chain_file = config.parent / tls_ca
+        generated_dir = config.parent / "generated"
+        # The key and the install script run in the tools image, on the context's demo/.
+        docker("build", "--target", "tools", "-t", tools_image, str(context))
+        configure_demo(tools_image, config.parent, sts_origin, demo_origin, demo_port, username, password, secret)
+        if "BEGIN CERTIFICATE" not in (chain_file.read_text(encoding="utf-8") if chain_file.exists() else ""):
+            raise RuntimeError(f"the install script did not write tlsCa's file {tls_ca}")
+        # The demo image, built after the install script, carries the chain and no key.
+        docker("build", "-t", image, str(context))
+        baked = docker(
+            "run", "--rm", "--entrypoint", "cat", image, f"/app/demo/{tls_ca}",
+            capture_output=True,
+        ).stdout
+        if baked != chain_file.read_text(encoding="utf-8"):
+            raise RuntimeError(f"the demo image's /app/demo/{tls_ca} is not the chain the install script saved")
+        listed = docker(
+            "run", "--rm", "--entrypoint", "ls", image, "-A", "/app/demo/generated",
+            capture_output=True,
+        ).stdout.split()
+        if listed != [Path(tls_ca).name]:
+            raise RuntimeError(f"the demo image's /app/demo/generated holds {listed}, not only the trust chain")
+        print(f"the demo image carries {tls_ca} from build time, and no key", flush=True)
         docker_rm(demo_name)
         docker(
             "run", "-d", "--name", demo_name, "--network", "host", *as_me(),
-            "-v", f"{work}:/work",
+            "-v", f"{generated_dir / 'client.key'}:/app/demo/generated/client.key:ro",
+            "-v", f"{generated_dir / 'client.crt'}:/app/demo/generated/client.crt:ro",
             "-e", f"PORT={demo_port}",
             "-e", f"PUBLIC_URL={demo_origin}",
-            "-e", "GNAP_CONFIG=/work/gnap.json",
+            "-e", "TLS_CA_REFRESH=0",
             image,
         )
         deadline = time.time() + 90
@@ -687,7 +725,7 @@ def main():
             if logs.stderr:
                 print(logs.stderr, file=sys.stderr, flush=True)
             raise RuntimeError("the demo /healthz did not answer ok")
-        client = Client(ca_file)
+        client = Client(chain_file)
         driver = Driver(client, sts_origin, demo_origin, username, password)
         driver.sign_in()
         signed_in = wait_for(
@@ -714,7 +752,13 @@ def main():
             ),
             "session-revoked to end the local session",
         )
-        print(json.dumps({"ok": True, "subject": signed_in.get("subject"), "events": finished.get("events")}, indent=2))
+        print(json.dumps({
+            "ok": True,
+            "subject": signed_in.get("subject"),
+            "trustChain": f"demo/{tls_ca}, baked into the demo image",
+            "idpCaInImage": True,
+            "events": finished.get("events"),
+        }, indent=2))
     finally:
         docker_rm(demo_name)
         if sts_name:

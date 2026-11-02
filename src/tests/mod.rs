@@ -5,6 +5,7 @@ mod client;
 mod config;
 mod ssf;
 mod subject;
+mod trust_chain;
 
 trait MustErr<T> {
     fn must_err(self) -> crate::Error;

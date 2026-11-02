@@ -22,13 +22,21 @@ Tests use an in-process stub on 127.0.0.1. They do not need a live authorization
 
 ## Live test
 
-`python3 scripts/live_iya_sts.py` signs the demo in to a fresh iya-sts `main` and checks two CAEP events through `GET /live-status` (`signedIn`, `subject`, `receiver`, `events` of `type` and `jti`; never a token). It runs openssl and `scripts/configure_iya_sts.py` in the `tools` stage as the invoking user, never Cargo on the host. Environment: `IYA_STS_URL`, `IYA_STS_IMAGE`, `LIVE_STS_PORT` (18515), `LIVE_DEMO_PORT` (18615). Never bind 3000, 8081 or 18481-18495. Always a fresh iya-sts: a registered GNAP key is not replaced and the second run is refused.
+`python3 scripts/live_iya_sts.py` signs the demo in to a fresh iya-sts `main` and checks two CAEP events through `GET /live-status` (`signedIn`, `subject`, `receiver`, `events` of `type` and `jti`; never a token). It runs openssl and `scripts/configure_iya_sts.py` in the `tools` stage as the invoking user, never Cargo on the host. Environment: `IYA_STS_URL`, `IYA_STS_IMAGE`, `LIVE_STS_PORT` (18558), `LIVE_DEMO_PORT` (18658). Never bind 3000, 8081 or 18481-18495. Always a fresh iya-sts: a registered GNAP key is not replaced and the second run is refused.
 
 `.github/workflows/nightly.yml` runs the unit image and the live script at 06:59 UTC (`59 6 * * *`). Do not add a schedule to `tests.yml`.
+
+The driver copies the checkout to a scratch context (no `.git`, `target`, `demo/generated`), runs the install script there, then builds the demo image, asserts the image's `/app/demo/generated` is exactly `tlsCa`'s chain, and runs it with only `client.key` and `client.crt` mounted and `TLS_CA_REFRESH=0`. It never fetches the CA for the demo, rewrites `tlsCa`, or mounts a CA. Its progress lines never print a URL or status from the signed-in client (CodeQL clear-text logging); secrets reach `docker run` as `-e NAME`.
 
 The registrar passes over only a `set-custom-claim` refusal that says "not one of" (an iya-sts without the `gnap_access_token` claim set). Any other refusal fails.
 
 The demo source is `src/bin/demo.rs`. `.gitignore` ignores `/bin/` at the root only, so the demo is tracked.
+
+## tlsCa, the iya-sts trust chain
+
+`tlsCa` (demo default `generated/idp-ca.pem`) is the iya-sts TLS listener CA trust chain. `scripts/configure_iya_sts.py` writes the whole chain there on every run through `scripts/trust_chain.py`'s `save_trust_chain()` (`GET /tls/server-certificate`, falling back to the handshake) and prints the anchor's subject and SHA-256. The Dockerfile's final stage runs `COPY demo demo` after the binary is built (the `build` stage copies only `Cargo.toml`, `Cargo.lock` and `src`, so a new chain does not recompile), and `.dockerignore` admits only `demo/generated/idp-ca.pem` from `demo/generated`. Copying the directory, not the file, keeps a build without the chain working; a file or glob COPY fails. Rebuild the demo image after re-running the install script against another iya-sts. The start-time refresh (`scripts/trust_chain.py` in `CMD`) stays, and `TLS_CA_REFRESH=0` turns it off.
+
+`src/http.rs` `Pinned` reads every PEM block of `tlsCa` as an anchor. The exact-match shortcut compares only the presented LEAF with the file's certificates (never any presented certificate with any file certificate: CA certificates are public) and still checks the name; otherwise webpki verifies the chain to an anchor and the name. `src/tests/trust_chain.rs` covers the script writing the chain, the library taking the file, every block as an anchor, a forged leaf before the real CAs refused, and the right chain with the wrong name refused. Every `ssl.SSLContext` the scripts make sets TLS 1.2 as the minimum.
 
 ## Layout
 

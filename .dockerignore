@@ -1,2 +1,6 @@
 .git
 target
+# demo/generated holds the client key and certificate. Only tlsCa's file, the
+# iya-sts listener CA trust chain, goes into an image (Dockerfile, COPY demo demo).
+demo/generated/*
+!demo/generated/idp-ca.pem

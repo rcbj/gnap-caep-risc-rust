@@ -37,6 +37,13 @@ def trust_path(raw, base_dir):
     return path if os.path.isabs(path) else str(Path(base_dir) / path)
 
 
+def unverified_context():
+    """TLS 1.2 or later without verification: only to read what the server presents or publishes."""
+    context = ssl._create_unverified_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def _certs(pem):
     return CERT_RE.findall(str(pem or ""))
 
@@ -108,7 +115,7 @@ def fetch_published(origin):
     host = parts.hostname
     port = parts.port or 443
     target = f"{parts.scheme}://{host}:{port}/tls/server-certificate" if port not in (443,) else f"{parts.scheme}://{host}/tls/server-certificate"
-    context = ssl._create_unverified_context()
+    context = unverified_context()
     raw = b""
     status = 0
     conn_host = host
@@ -142,7 +149,7 @@ def fetch_handshake(origin):
             return bundle_of(blocks)
     except Exception:
         pass
-    context = ssl._create_unverified_context()
+    context = unverified_context()
     with socket.create_connection((host, port), timeout=TIMEOUT_S) as sock:
         with context.wrap_socket(sock, server_hostname=servername) as tls:
             der = tls.getpeercert(binary_form=True)

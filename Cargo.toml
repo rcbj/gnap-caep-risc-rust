@@ -15,7 +15,7 @@ categories = ["authentication"]
 [dependencies]
 base64 = "0.22"
 const-oid = "0.9"
-p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+p256 = { version = "0.14", features = ["ecdsa", "pem"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand = "0.8"
 rsa = { version = "0.9", features = ["sha2", "pem"] }

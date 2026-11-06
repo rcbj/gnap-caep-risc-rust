@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 fn private_pem() -> String {
-    let key = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
+    let key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
     key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF).unwrap().to_string()
 }
 

@@ -7,11 +7,12 @@ use base64::Engine;
 use p256::ecdsa::SigningKey;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use sec1::DecodeEcPrivateKey;
 use rsa::traits::PublicKeyParts;
 use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
 use serde_json::{Map, Value};
 use sha2::{Sha256, Sha384, Sha512};
+use p256::ecdsa::signature::{Signer as _, Verifier as _};
+use rsa::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};
 use x509_parser::prelude::*;
 
@@ -183,7 +184,7 @@ fn public_jwk(secret: &Secret) -> Result<Map<String, Value>, Error> {
     let mut jwk = Map::new();
     match secret {
         Secret::Ec(key) => {
-            let point = key.verifying_key().to_encoded_point(false);
+            let point = key.verifying_key().to_sec1_point(false);
             jwk.insert("kty".into(), Value::String("EC".into()));
             jwk.insert("crv".into(), Value::String("P-256".into()));
             jwk.insert("x".into(), Value::String(b64url(point.x().unwrap())));
@@ -207,7 +208,7 @@ fn parse_private(text: &str) -> Result<Secret, Error> {
     for (label, der) in pem_blocks(text) {
         let result = match label.as_str() {
             "PRIVATE KEY" => SigningKey::from_pkcs8_der(&der).map(Secret::Ec).or_else(|_| RsaPrivateKey::from_pkcs8_der(&der).map(Secret::Rsa)).map_err(|err| err.to_string()),
-            "EC PRIVATE KEY" => SigningKey::from_sec1_der(&der).map(Secret::Ec).map_err(|err| err.to_string()),
+            "EC PRIVATE KEY" => p256::SecretKey::from_sec1_der(&der).map(|k| Secret::Ec(SigningKey::from(k))).map_err(|err| err.to_string()),
             "RSA PRIVATE KEY" => RsaPrivateKey::from_pkcs1_der(&der).map(Secret::Rsa).map_err(|err| err.to_string()),
             _ => continue,
         };
@@ -224,7 +225,7 @@ fn same_public(secret: &Secret, cert_der: &[u8]) -> Result<bool, Error> {
     let public = cert.public_key().parsed().map_err(|err| fail("config", format!("the certificate could not be read: {err}")))?;
     Ok(match (secret, public) {
         (Secret::Ec(key), x509_parser::public_key::PublicKey::EC(point)) => {
-            let ours = key.verifying_key().to_encoded_point(false);
+            let ours = key.verifying_key().to_sec1_point(false);
             point.data() == ours.as_bytes()
         }
         (Secret::Rsa(key), x509_parser::public_key::PublicKey::RSA(rsa_key)) => {

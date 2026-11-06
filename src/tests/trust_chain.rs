@@ -10,7 +10,7 @@
 //! and that the host name is verified on both paths.
 
 use crate::http::{send, TlsOpt};
-use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType};
+use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, ServerConnection};
 use std::io::{Read, Write};
@@ -23,6 +23,7 @@ use std::time::Duration;
 struct Ca {
     cert: Certificate,
     key: KeyPair,
+    params: CertificateParams,
 }
 
 struct Chain {
@@ -45,18 +46,23 @@ fn ca_params(name: &str) -> CertificateParams {
     params
 }
 
+fn self_signed_ca(name: &str) -> Ca {
+    let key = KeyPair::generate().unwrap();
+    let params = ca_params(name);
+    Ca { cert: params.self_signed(&key).unwrap(), key, params }
+}
+
+fn ca_under(name: &str, parent: &Ca) -> Ca {
+    let key = KeyPair::generate().unwrap();
+    let params = ca_params(name);
+    Ca { cert: params.signed_by(&key, &Issuer::from_params(&parent.params, &parent.key)).unwrap(), key, params }
+}
+
 fn chain() -> Chain {
-    let root_key = KeyPair::generate().unwrap();
-    let root = ca_params("test Root CA").self_signed(&root_key).unwrap();
-    let intermediate_key = KeyPair::generate().unwrap();
-    let intermediate = ca_params("test Intermediate CA").signed_by(&intermediate_key, &root, &root_key).unwrap();
-    let issuing_key = KeyPair::generate().unwrap();
-    let issuing = ca_params("test TLS Issuing CA").signed_by(&issuing_key, &intermediate, &intermediate_key).unwrap();
-    Chain {
-        root: Ca { cert: root, key: root_key },
-        intermediate: Ca { cert: intermediate, key: intermediate_key },
-        issuing: Ca { cert: issuing, key: issuing_key },
-    }
+    let root = self_signed_ca("test Root CA");
+    let intermediate = ca_under("test Intermediate CA", &root);
+    let issuing = ca_under("test TLS Issuing CA", &intermediate);
+    Chain { root, intermediate, issuing }
 }
 
 /// A leaf issued by `issuer`, with the given DNS names and IP literals as SANs.
@@ -69,7 +75,7 @@ fn leaf(issuer: &Ca, dns: &[&str], ips: &[IpAddr]) -> Leaf {
     }
     params.is_ca = IsCa::NoCa;
     let key = KeyPair::generate().unwrap();
-    let cert = params.signed_by(&key, &issuer.cert, &issuer.key).unwrap();
+    let cert = params.signed_by(&key, &Issuer::from_params(&issuer.params, &issuer.key)).unwrap();
     Leaf { cert, key }
 }
 
@@ -256,8 +262,7 @@ fn a_forged_leaf_followed_by_the_real_cas_is_refused() {
     let real = leaf(&chain.issuing, &["localhost"], &loopback());
     let pem = pem_of(&real, &chain);
     // The forger's own CA under the real Issuing CA's name, so only the signature differs.
-    let forger_key = KeyPair::generate().unwrap();
-    let forger = Ca { cert: ca_params("test TLS Issuing CA").self_signed(&forger_key).unwrap(), key: forger_key };
+    let forger = self_signed_ca("test TLS Issuing CA");
     let forged = leaf(&forger, &["localhost"], &loopback());
     let presented = vec![
         forged.cert.der().to_vec(),

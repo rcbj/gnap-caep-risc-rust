@@ -16,7 +16,7 @@ categories = ["authentication"]
 base64 = "0.23"
 const-oid = "0.9"
 p256 = { version = "0.14", features = ["ecdsa", "pem", "getrandom"] }
-pkcs8 = { version = "0.10", features = ["pem"] }
+pkcs8 = { version = "0.11", features = ["pem"] }
 rand = "0.8"
 rsa = { version = "0.9", features = ["sha2", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

@@ -14,7 +14,7 @@ categories = ["authentication"]
 
 [dependencies]
 base64 = "0.23"
-const-oid = "0.9"
+const-oid = "0.10"
 p256 = { version = "0.14", features = ["ecdsa", "pem", "getrandom"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand = "0.8"

@@ -15,7 +15,7 @@ The PEP never permits by default. A decision is `Permit`, `Deny` or `Unavailable
 | Policy changes | at once | on the `pep-policies-changed` event, or the next poll |
 | Decision records | written by iya-sts | sent by the PEP to iya-sts's audit log |
 
-Pick `central` when decisions are infrequent or must reflect a change immediately, and `local` when decisions are on a hot path or must survive a short outage. Both modes give the same answer for the same request: `local` maps the request through the realm's catalogue exactly as iya-sts does, and its engine is held to iya-sts's conformance corpus.
+Pick `central` when decisions are infrequent or must reflect a change immediately, and `local` when decisions are on a hot path or must survive a short outage. Both modes are meant to give the same answer for the same request (see [Test that central and local agree](#test-that-central-and-local-agree) for the cases where they do not yet): `local` maps the request through the realm's catalogue exactly as iya-sts does, and its engine is held to iya-sts's conformance corpus.
 
 ## Before you start: set up iya-sts
 
@@ -221,6 +221,21 @@ The receiver then asks its stream for `urn:iya:sts:secevent:event-type:pep-polic
 | `Deny` although the policy should permit | The policy reads a claim that has no catalogue row, so it never arrives (step 4). Or a Permit carried an obligation type missing from `supportedObligations`. |
 | Policy changes take minutes to apply (`local`) | The stream doesn't carry the event: check the console's *policy-change events* column, `ssfAllowedEvents` (step 6), and `ReceiverOpt::on_error` (standard output without one) for a refused stream update. |
 | The configuration is refused for the assertion key | It is one of this library's own keys. The PEP needs a key of its own. |
+
+## Test that central and local agree
+
+`src/tests/authzen_cases.json` is this library's own AuthZEN table: catalogue rows (typed values, bags, dotted paths, short category and datatype names), policies in ALFA (with the XACML iya-sts stores for each), people with ID token claims, and evaluation cases, each with the answer the host should see. `src/tests/authzen.rs` asks every case through `Client::decide` or `Client::decide_grant`.
+
+- `docker build --target test .` runs it in `local` mode against a stub realm serving the table.
+- `python3 scripts/live_iya_sts.py --authzen` provisions the table into a fresh iya-sts (a `central` and a `local` PEP per application, each with its own key) and runs every case through both. It fails unless central, local and the table all agree, and prints `cases`, `centralEqualsLocal`, `bothEqualExpected` and each mismatch. `--write-xacml` takes iya-sts's stored XACML into the table after you change an ALFA policy.
+
+Known differences, each failing in the live run until it is fixed where it lives:
+
+| Case | `central` | `local` | Where the fix belongs |
+|---|---|---|---|
+| `advice` | Permit, no advice | Permit with the advice | iya-pep: `central` never reads advice (iya-sts sends it only with `authzen.returnReasons`) |
+| `fga-reference` (an enforcing application whose policy references another) | Unavailable (500) | Permit | iya-sts #2027: `decideAccess()` evaluates without the reference closure |
+| `fga-stage` (a policy reading `urn:sts:xacml:fga:stage`) | Deny | Permit | iya-pep: `local` does not add the two `urn:sts:xacml:fga:*` facts |
 
 ## The demo
 

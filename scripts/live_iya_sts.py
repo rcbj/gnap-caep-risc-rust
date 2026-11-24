@@ -30,6 +30,13 @@ carries that file from build time. The demo container gets no CA mount (only
 the client key and certificate, one file each) and does not refresh the chain
 at start (TLS_CA_REFRESH=0). tlsCa is never rewritten. This script reads the
 saved chain for its own HTTPS client.
+
+--authzen runs the embedded PEP's differential test instead (#39): it registers
+the client, provisions src/tests/authzen_cases.json (people, catalogue rows,
+ALFA policies, applications, a central and a local PEP per group), and runs the
+env-gated Rust test live_central_and_local_agree in rust:1-bookworm. The final
+JSON reports cases, centralEqualsLocal, bothEqualExpected and the mismatches.
+--write-xacml takes the XACML iya-sts stored into the table.
 """
 
 import base64
@@ -769,9 +776,177 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# --authzen: the embedded PEP's differential run (#39). src/tests/authzen_cases.json
+# is provisioned into the fresh iya-sts (its people, catalogue rows and policies,
+# and per PEP group an application, a central and a local PEP service account,
+# each with its own key, certified and bound to it), then the env-gated Rust
+# test runs every case through a central and a local Client and requires both
+# to give the table's answer. Cargo runs in rust:1-bookworm, never on the host.
+# ---------------------------------------------------------------------------
+
+AUTHZEN_TABLE = ROOT / "src" / "tests" / "authzen_cases.json"
+AUTHZEN_MODES = ("central", "local")
+CARGO_VOLUME = "iya-pep-cargo"
+RUST_IMAGE = "rust:1-bookworm"
+
+
+def admin_step(client, sts_origin, token, path, body, what, method="POST"):
+    status, parsed = admin_json(client, sts_origin, token, method, path, body)
+    if status != 200 or parsed.get("ok") is False:
+        raise RuntimeError(f"{what}: {method} {path} answered {status}: {json.dumps(parsed)[:600]}")
+    print(f"{what}: {status}", flush=True)
+    return parsed
+
+
+def pep_key(tools_image, work, name):
+    """A P-256 key for one PEP, made in the tools image as the invoking user,
+    0600, and its certificate request. Neither is printed; only the request
+    is sent."""
+    peps = work / "peps"
+    peps.mkdir(exist_ok=True)
+    docker(
+        "run", "--rm", *as_me(), "-v", f"{peps}:/peps", tools_image, "sh", "-c",
+        f"umask 077 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /peps/{name}.pem"
+        f" && openssl req -new -key /peps/{name}.pem -subj /CN={name} -out /peps/{name}.csr",
+        capture_output=True,
+    )
+    return peps / f"{name}.pem", (peps / f"{name}.csr").read_text(encoding="utf-8")
+
+
+def stored_xacml(client, sts_origin, token, name):
+    status, parsed = admin_json(client, sts_origin, token, "GET", "/admin-api/xacml/editor?policy=" + urllib.parse.quote(name))
+    document = parsed.get("document") if status == 200 else None
+    if not isinstance(document, str) or not document:
+        raise RuntimeError(f"the editor gave no document for {name}: {status}")
+    return document.rstrip("\n").split("\n")
+
+
+def provision_authzen(client, sts_origin, token, table, tools_image, work):
+    """The table's people, catalogue, applications, policies and PEPs. Answers
+    peps.<group>.<mode> for the Rust test, and the policies whose stored XACML
+    is not the table's."""
+    for username, attributes in table["directory"].items():
+        admin_step(client, sts_origin, token, "/admin-api/users/create", {
+            "username": username, "invent": False, "credential": "none",
+            "attributes": {"cn": username, "sn": username, **attributes},
+        }, f"the directory person {username}")
+    for row in table["catalogue"]:
+        admin_step(client, sts_origin, token, "/admin-api/xacml/authzen/set-attribute", row,
+                   f"the catalogue row {row['object']}.{row['property']}")
+    peps, drift = {}, []
+    for group_name, group in table["peps"].items():
+        application = group["application"]
+        if group.get("fga"):
+            admin_step(client, sts_origin, token, "/admin-api/applications/create", {
+                "identifier": application, "name": application, "kind": "gnap-client", "protocols": ["gnap"], "fields": {},
+            }, f"the application {application}")
+        for index, policy in enumerate(group["policies"]):
+            name = policy.get("name")
+            if policy.get("own"):
+                _status, page = admin_json(client, sts_origin, token, "GET",
+                                           "/admin-api/applications?application=" + urllib.parse.quote(application))
+                name = (((page.get("page") or {}).get("fga") or {}).get("policy") or {}).get("name")
+                if not name:
+                    raise RuntimeError(f"{application} names no fine-grained policy: {json.dumps(page)[:400]}")
+            admin_step(client, sts_origin, token, "/admin-api/xacml/import-alfa",
+                       {"name": name, "alfa": "\n".join(policy["alfa"]) + "\n"}, f"{group_name}: the policy {name}")
+            for ref in policy.get("references") or []:
+                admin_step(client, sts_origin, token, "/admin-api/xacml/add-policy-reference",
+                           {"policy": name, "path": "", "ref": ref}, f"{group_name}: {name} references {ref}")
+            if policy.get("root") and not policy.get("own"):
+                admin_step(client, sts_origin, token, "/admin-api/xacml/set-root", {"name": name},
+                           f"{group_name}: {name} is the realm root")
+            stored = stored_xacml(client, sts_origin, token, name)
+            if stored != policy.get("xacml"):
+                drift.append((group_name, index, stored))
+        peps[group_name] = {}
+        for mode in AUTHZEN_MODES:
+            pep_name = f"pep-gnap-{group_name}-{mode}"
+            admin_step(client, sts_origin, token, "/admin-api/users/create", {
+                "username": pep_name, "invent": False, "credential": "none", "serviceAccount": True,
+                "owners": ["admin-write"], "attributes": {"cn": pep_name, "displayName": pep_name},
+            }, f"the service account {pep_name}")
+            admin_step(client, sts_origin, token, "/admin-api/groups/add-member",
+                       {"group": "remote-peps", "member": pep_name}, f"{pep_name} in remote-peps")
+            key_file, csr = pep_key(tools_image, work, pep_name)
+            admin_step(client, sts_origin, token, "/admin-api/xacml/issue-pep-credential",
+                       {"name": pep_name, "csr": csr, "application": application},
+                       f"{pep_name}: its key certified and bound to {application}")
+            peps[group_name][mode] = {"name": pep_name, "assertionKey": "/work/peps/" + key_file.name}
+        if group.get("fga"):
+            admin_step(client, sts_origin, token, "/admin-api/applications/fga-enable", {"application": application},
+                       f"{application} enforces fine-grained authorization")
+    return peps, drift
+
+
+def run_authzen_test(work):
+    """The env-gated test, in rust:1-bookworm as the invoking user, with the
+    shared cargo cache and a target directory inside this checkout."""
+    completed = subprocess.run([
+        "docker", "run", "--rm", "--network", "host", *as_me(),
+        "-v", f"{CARGO_VOLUME}:/cargo", "-e", "CARGO_HOME=/cargo", "-e", "HOME=/tmp",
+        "-v", f"{ROOT}:/src", "-w", "/src", "-e", "CARGO_TARGET_DIR=/src/target/live-authzen",
+        "-v", f"{work}:/work", "-e", "GNAP_AUTHZEN_LIVE=/work/authzen-live.json", "-e", "GNAP_AUTHZEN_REPORT=/work/authzen-report.json",
+        RUST_IMAGE, "cargo", "test", "--locked", "--features", "local", "--lib", "live_central_and_local_agree", "--", "--nocapture",
+    ], check=False, text=True)
+    report = work / "authzen-report.json"
+    return completed.returncode, (json.loads(report.read_text(encoding="utf-8")) if report.exists() else None)
+
+
+def authzen_main():
+    sts_port = int(os.environ.get("LIVE_STS_PORT") or 18558)
+    demo_port = int(os.environ.get("LIVE_DEMO_PORT") or 18658)
+    if sts_port in FORBIDDEN_PORTS or demo_port in FORBIDDEN_PORTS or sts_port == demo_port:
+        raise SystemExit("LIVE_STS_PORT and LIVE_DEMO_PORT must not bind 3000, 8081, or 18481 to 18495")
+    write_xacml = "--write-xacml" in sys.argv[1:]
+    table = json.loads(AUTHZEN_TABLE.read_text(encoding="utf-8"))
+    secret = os.environ.get("ADMIN_API_CLIENT_SECRET") or os.environ.get("STS_ADMIN_API_CLIENT_SECRET") or secrets.token_urlsafe(24)
+    password = os.environ.get(PROFILE["user_env"]) or secrets.token_urlsafe(18)
+    sts_origin, sts_name = prepare_sts(sts_port, secret)
+    demo_origin = f"http://127.0.0.1:{demo_port}"
+    tools_image = PROFILE["repo"] + "-live:tools"
+    work = Path(tempfile.mkdtemp(prefix=PROFILE["repo"] + "-authzen-"))
+    try:
+        wait_port(urllib.parse.urlsplit(sts_origin).port or 443, 120)
+        wait_ready(sts_origin, 90)
+        context = work / "context"
+        copy_context(context)
+        config = context / PROFILE["config_file"]
+        rewrite_config(config, config, sts_origin, demo_origin)
+        docker("build", "--target", "tools", "-t", tools_image, str(context))
+        # The GNAP client registered as the demo is; no demo runs, the test is the host.
+        configure_demo(tools_image, config.parent, sts_origin, demo_origin, demo_port, PROFILE["test_user"], password, secret)
+        chain_file = config.parent / json.loads(config.read_text(encoding="utf-8"))["tlsCa"]
+        client = Client(chain_file)
+        token = mint_admin(client, sts_origin, secret)
+        peps, drift = provision_authzen(client, sts_origin, token, table, tools_image, work)
+        if drift:
+            if not write_xacml:
+                names = ", ".join(f"{group} policy {index}" for group, index, _ in drift)
+                raise RuntimeError(f"iya-sts stored other XACML than the table's for {names}; "
+                                   "run with --write-xacml to take iya-sts's into the table")
+            for group, index, stored in drift:
+                table["peps"][group]["policies"][index]["xacml"] = stored
+            AUTHZEN_TABLE.write_text(json.dumps(table, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+            print(f"wrote iya-sts's XACML for {len(drift)} policies into {AUTHZEN_TABLE.relative_to(ROOT)}", flush=True)
+        live = {"config": "/work/context/" + PROFILE["config_file"], "peps": peps}
+        (work / "authzen-live.json").write_text(json.dumps(live, indent=2), encoding="utf-8")
+        code, report = run_authzen_test(work)
+        summary = {"ok": code == 0 and bool(report) and not report.get("mismatches")}
+        summary.update(report or {"error": f"the test exited {code} without a report"})
+        print(json.dumps(summary, indent=2))
+        if not summary["ok"]:
+            raise RuntimeError(f"the AuthZEN differential run failed ({code})")
+    finally:
+        if sts_name:
+            docker_rm(sts_name)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 if __name__ == "__main__":
     try:
-        main()
+        authzen_main() if "--authzen" in sys.argv[1:] else main()
     except Exception as err:
         print(str(err), file=sys.stderr)
         sys.exit(1)

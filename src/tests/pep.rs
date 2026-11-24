@@ -114,7 +114,7 @@ const READ_ONLY: &str = r#"<Policy xmlns="urn:oasis:names:tc:xacml:3.0:core:sche
 static FILES: AtomicUsize = AtomicUsize::new(0);
 
 /// Writes a key into a fresh directory and returns (directory, file name).
-fn key_file(pem: &str) -> (std::path::PathBuf, String) {
+pub(super) fn key_file(pem: &str) -> (std::path::PathBuf, String) {
     let n = FILES.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("gnap-pep-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -122,7 +122,7 @@ fn key_file(pem: &str) -> (std::path::PathBuf, String) {
     (dir, "pep-key.pem".to_string())
 }
 
-fn ec_pem() -> String {
+pub(super) fn ec_pem() -> String {
     let key = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
     key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF).unwrap().to_string()
 }

@@ -365,7 +365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -634,7 +634,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "iya-pep"
 version = "0.1.0"
-source = "git+https://github.com/rcbj/iya-pep-rust?branch=feature%2F1#63a58c2c577c5ad22b0a3a0e58d6ac0dd9d606bf"
+source = "git+https://github.com/rcbj/iya-pep-rust?branch=feature%2F1#c0d61cadaec669279fad485ece988e9af934ab8d"
 dependencies = [
  "base64 0.22.1",
  "native-tls",
@@ -1154,7 +1154,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1439,7 +1439,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

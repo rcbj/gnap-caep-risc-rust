@@ -831,6 +831,10 @@ def provision_authzen(client, sts_origin, token, table, tools_image, work):
             "username": username, "invent": False, "credential": "none",
             "attributes": {"cn": username, "sn": username, **attributes},
         }, f"the directory person {username}")
+    # iya-sts hands a central PEP the answer's advice only while the realm
+    # returns reasons; without it a Permit's advice reaches local mode alone.
+    admin_step(client, sts_origin, token, "/admin-api/config/set",
+               {"key": "authzen.returnReasons", "value": True}, "authzen.returnReasons on")
     for row in table["catalogue"]:
         admin_step(client, sts_origin, token, "/admin-api/xacml/authzen/set-attribute", row,
                    f"the catalogue row {row['object']}.{row['property']}")

@@ -15,7 +15,7 @@ The PEP never permits by default. A decision is `Permit`, `Deny` or `Unavailable
 | Policy changes | at once | on the `pep-policies-changed` event, or the next poll |
 | Decision records | written by iya-sts | sent by the PEP to iya-sts's audit log |
 
-Pick `central` when decisions are infrequent or must reflect a change immediately, and `local` when decisions are on a hot path or must survive a short outage. Both modes are meant to give the same answer for the same request (see [Test that central and local agree](#test-that-central-and-local-agree) for the cases where they do not yet): `local` maps the request through the realm's catalogue exactly as iya-sts does, and its engine is held to iya-sts's conformance corpus.
+Pick `central` when decisions are infrequent or must reflect a change immediately, and `local` when decisions are on a hot path or must survive a short outage. Both modes give the same answer for the same request (held by [Test that central and local agree](#test-that-central-and-local-agree)): `local` maps the request through the realm's catalogue exactly as iya-sts does, and its engine is held to iya-sts's conformance corpus.
 
 ## Before you start: set up iya-sts
 
@@ -184,7 +184,7 @@ Only the properties the catalogue declares are sent.
 
 ### Obligations
 
-A `Permit` can carry obligations, which your application must carry out before it grants the access (for example a `step-up` to a stronger `acr`). The PEP only hands you obligations of types you list in `supportedObligations`. A Permit carrying any other obligation is turned into a Deny, so an obligation is never silently dropped. `advice` (local mode) can be ignored.
+A `Permit` can carry obligations, which your application must carry out before it grants the access (for example a `step-up` to a stronger `acr`). The PEP only hands you obligations of types you list in `supportedObligations`. A Permit carrying any other obligation is turned into a Deny, so an obligation is never silently dropped. `advice` can be ignored; `central` carries it only while the realm's `authzen.returnReasons` is on.
 
 ```json
 "pep": { "name": "pep-orders", "assertionKey": "pep-key.pem", "supportedObligations": ["step-up"] }
@@ -229,13 +229,9 @@ The receiver then asks its stream for `urn:iya:sts:secevent:event-type:pep-polic
 - `docker build --target test .` runs it in `local` mode against a stub realm serving the table.
 - `python3 scripts/live_iya_sts.py --authzen` provisions the table into a fresh iya-sts (a `central` and a `local` PEP per application, each with its own key) and runs every case through both. It fails unless central, local and the table all agree, and prints `cases`, `centralEqualsLocal`, `bothEqualExpected` and each mismatch. `--write-xacml` takes iya-sts's stored XACML into the table after you change an ALFA policy.
 
-Known differences, each failing in the live run until it is fixed where it lives:
+The live run sets `authzen.returnReasons` on in its realm, because iya-sts sends a `central` PEP the answer's advice only while that setting is on. Do the same in your realm if your policies give advice you act on; without it `central` hands no advice while `local` does.
 
-| Case | `central` | `local` | Where the fix belongs |
-|---|---|---|---|
-| `advice` | Permit, no advice | Permit with the advice | iya-pep: `central` never reads advice (iya-sts sends it only with `authzen.returnReasons`) |
-| `fga-reference` (an enforcing application whose policy references another) | Unavailable (500) | Permit | iya-sts #2027: `decideAccess()` evaluates without the reference closure |
-| `fga-stage` (a policy reading `urn:sts:xacml:fga:stage`) | Deny | Permit | iya-pep: `local` does not add the two `urn:sts:xacml:fga:*` facts |
+Against iya-sts `feature/2028` with iya-pep `c0d61ca`, all 58 cases agree: `central` == `local` == the table. The run first found three differences, each fixed where it lived: advice dropped by `central` (iya-pep reads `context.advice` now), an enforcing application's policy reference left unresolved by `central` (iya-sts #2027), and the `urn:sts:xacml:fga:*` facts missing in `local` (iya-pep adds them for an application in the catalogue's `fgaApplications`).
 
 ## The demo
 

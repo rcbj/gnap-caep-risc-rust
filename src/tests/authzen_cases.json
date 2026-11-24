@@ -1918,12 +1918,6 @@
    },
    "expect": {
     "decision": "Deny"
-   },
-   "localDefect": {
-    "local": {
-     "decision": "Permit"
-    },
-    "where": "iya-pep-rust src/authzen.rs: an evaluation about an application on the catalogue's fgaApplications is mapped without the two facts iya-sts's authzen_map.ts adds through fgaAccess() (urn:sts:xacml:fga:application in resource, urn:sts:xacml:fga:stage = access in environment), so local mode never matches a rule on the stage. Central answers Deny, local Permit; the live run fails on it."
    }
   },
   {

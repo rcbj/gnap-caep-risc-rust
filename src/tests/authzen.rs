@@ -251,7 +251,7 @@ fn serve(realm: &Realm, method: &str, path: &str, body: &str) -> (u16, &'static 
     match path {
         p if p.starts_with("/gnap/continue/") && method == "DELETE" => (204, "application/json", String::new()),
         "/oauth2/token" => json(200, json!({"access_token": "pep-token", "token_type": "DPoP", "expires_in": 300})),
-        "/xacml/pep/register" => json(201, json!({"registered": true})),
+        "/xacml/pep/register" => json(201, json!({"registered": true, "identity": "uid=pep-authzen-offline,ou=users,dc=example,dc=com"})),
         "/xacml/pep/heartbeat" => json(200, json!({"acknowledged": true, "current": true})),
         "/xacml/pep/authzen-catalogue" => json(200, realm.catalogue.clone()),
         "/xacml/pep/policies" => json(200, realm.policies.clone()),

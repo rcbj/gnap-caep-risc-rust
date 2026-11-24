@@ -57,7 +57,7 @@ match client.decide_grant(&grant, &Access::new("read", "order", "42")) {
 
 The section is off unless present, and a build without the feature refuses it. The PEP's key must be its own, and only the claims the realm's AuthZEN catalogue declares are sent. The demo protects `GET /orders/<id>` with the PEP.
 
-`src/tests/authzen_cases.json` is this library's AuthZEN table for the PEP. The unit suite runs it in `local` mode against a stub; `python3 scripts/live_iya_sts.py --authzen` runs every case through a `central` and a `local` PEP on a fresh iya-sts and fails unless both give the table's answer. [docs/remote-pep.md](docs/remote-pep.md#test-that-central-and-local-agree) lists the differences it has found.
+`src/tests/authzen_cases.json` is this library's AuthZEN table for the PEP. The unit suite runs it in `local` mode against a stub; `python3 scripts/live_iya_sts.py --authzen` runs every case through a `central` and a `local` PEP on a fresh iya-sts and fails unless both give the table's answer. All 58 cases agree against iya-sts `feature/2028` with iya-pep `c0d61ca`; see [docs/remote-pep.md](docs/remote-pep.md#test-that-central-and-local-agree), including the `authzen.returnReasons` setting the run turns on.
 
 ## Demo
 

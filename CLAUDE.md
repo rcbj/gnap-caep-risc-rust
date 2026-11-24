@@ -16,7 +16,7 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 docker build --target test .
 ```
 
-The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
+The `test` stage runs `cargo test` and then `cargo test --all-features` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
 Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
 
@@ -38,10 +38,25 @@ The demo source is `src/bin/demo.rs`. `.gitignore` ignores `/bin/` at the root o
 
 `src/http.rs` `Pinned` reads every PEM block of `tlsCa` as an anchor. The exact-match shortcut compares only the presented LEAF with the file's certificates (never any presented certificate with any file certificate: CA certificates are public) and still checks the name; otherwise webpki verifies the chain to an anchor and the name. `src/tests/trust_chain.rs` covers the script writing the chain, the library taking the file, every block as an anchor, a forged leaf before the real CAs refused, and the right chain with the wrong name refused. Every `ssl.SSLContext` the scripts make sets TLS 1.2 as the minimum.
 
+## Embedded PEP
+
+#39 (iya-sts#1206 work item 8), behind the `pep` feature (`local` adds the engine): `src/pep.rs` wires in the shared `iya-pep` crate (rcbj/iya-pep-rust), following oidc-caep-risc-rust#46.
+- `resolve` builds the PEP (nothing sent) from the `pep` section and stores it on `Config.pep`; `Client::create` (and `from_file`) starts it. `Client::new` does not.
+  - `pdpUrl` defaults to the grant endpoint's realm (`/realm/<id>` kept, a named server's segment and `/gnap` dropped; else the origin). Not `idTokenIssuer`, which defaults to the origin and drops the realm.
+  - `application` defaults to `application`; `signals` to whether the library runs a receiver (`ssf` resolved); `tlsCa` to the library's; `assertionKey` is relative to the config's directory.
+  - It refuses an assertion key that is the client instance key (by JWK thumbprint). That is the only key this library holds (the mTLS certificate is the same key).
+- Without the feature, a `pep` section is refused rather than ignored.
+- `decide` / `decide_grant` adapt a `Person` (`uid` from `account`, else `preferred_username`, else `sub`; the ID token claims) into the PEP's subject. `decide_grant` denies without asking a grant with no subject, one this client revoked (`revoke` remembers the continuation URI, 10000 at most), or one whose access token expired.
+- `ReceiverOpt::pep`: `SignalsReceiver::new` adds `pep-policies-changed` to the events requested and registers the hand-over when the PEP wants events (`local`, or `central` with a Permit cache).
+- `src/tests/pep.rs` has its own stub PDP (also the realm's GNAP continuation URI), and reuses `src/tests/ssf.rs`'s transmitter for the receiver test. The no-feature refusal is in `src/tests/config.rs`.
+- **The dependency is a git dependency on iya-pep-rust's `feature/1`** until that crate's first release. Switch it to the crates.io version then, because crates.io refuses a git dependency at publish.
+- The live test of the PEP waits for iya-sts #2026–#2028; `demo/gnap.json` has no `pep` section until then.
+
 ## Layout
 
 - `src` the client, key proofs (mtls, httpsig, jwsd), and one poll stream
-- `src/tests` config, subject, client, and the Shared Signals receiver
+- `src/tests` config, subject, client, the Shared Signals receiver, and (feature `pep`) the embedded PEP
+- `src/pep.rs` the embedded iya-sts PEP (feature `pep`)
 - `src/bin/demo.rs` the HTTP demo; `demo/gnap.json` the sample configuration
 - `scripts/configure_iya_sts.py` registers the app; `scripts/redirects.py` and `scripts/trust_chain.py` support it
 

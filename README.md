@@ -10,7 +10,7 @@ The private key stays in this process. The same `gnap.json` shape as the Python 
 docker build --target test .
 ```
 
-The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
+The `test` stage runs `cargo test`, then `cargo test --all-features`, in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
 Crate name: `gnap-caep-risc`. A pull request merged into `main` publishes the crate to crates.io after the test workflow succeeds on that commit. A direct push does not. The token is the `CARGO_REGISTRY_TOKEN` repository secret. A release happens when the library's files changed since the last release's tag: `publish.yml` takes one patch above the highest published version, publishes it, and creates the matching tag and GitHub Release. A change to tests, the demo, or the docs releases nothing. To choose a version or start a new minor, raise `VERSION`; the version is stamped in CI and is not committed, so the manifests can trail what is published.
 
@@ -33,6 +33,36 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 `signals: false` does not start the Shared Signals receiver, does not require transmitter metadata, and drops `ssf.read` and `ssf.manage` from the GNAP access. The resolved configuration includes `signals: false`. If those two rights were the only ones, configuration fails and asks for another right the authorization server grants. Any other value fails with `signals must be true or false`.
 
 `ssf.pollIntervalMs` is the poll interval in milliseconds. `SignalsReceiver::stop` waits until the background poll has finished.
+
+## Embedded PEP (features `pep` and `local`)
+
+The [iya-pep](https://github.com/rcbj/iya-pep-rust) crate, wired in (iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)): an application asks iya-sts's policy whether the person a GNAP grant names may act on a resource.
+
+```toml
+gnap-caep-risc = { version = "…", features = ["pep"] }    # central: AuthZEN at iya-sts
+gnap-caep-risc = { version = "…", features = ["local"] }  # local too: decided in process
+```
+
+Add a `pep` section to `gnap.json`. It is off unless present, and a build without the `pep` feature refuses it rather than ignoring it:
+
+```json
+"pep": { "name": "pep-orders", "mode": "local", "assertionKey": "generated/pep-key.pem" }
+```
+
+- **Defaults from this library:**
+  - `pdpUrl` is the iya-sts realm the grant endpoint belongs to, with the realm prefix: `https://sts/realm/acme/gnap` (or a named server's `…/realm/acme/<as>/gnap`) gives `https://sts/realm/acme`, and `https://sts/gnap` gives `https://sts`.
+  - `application` is `application`, the GNAP client registered in iya-sts.
+  - `signals` is on when this library runs a Shared Signals receiver (signals on and a transmitter configured); `tlsCa` is the library's.
+  - `assertionKey` is read relative to the configuration's directory, like `privateKey`.
+  - iya-pep's README lists every member.
+- **The PEP's key is its own.** Resolving refuses a configuration where the assertion key is the client instance key (`privateKey`, behind every `httpsig`, `jwsd` or `mtls` proof), compared by JWK thumbprint. Certify the key and bind the PEP to the application with iya-sts's `issue-pep-credential`.
+- **Starting.** `Client::create` (and `from_file`) starts the PEP: registration and, in `local` mode, the first policy pull. `Client::new` does not; call `client.pep().unwrap().start()` yourself if you use it.
+- **Deciding:**
+  - `client.decide_grant(&grant, &Access::new("read", "order", "42"))`, or `client.decide(&person, …)`. A grant that has ended is a Deny without asking: no subject, revoked by this client, or an expired access token (rotate with `ensure_fresh` first).
+  - The subject is the grant's `Person`: the username from the `account` subject identifier, else the ID token's `preferred_username`, else `sub`; its properties are the ID token's claims (`acr`, `amr`, `auth_time`, ...). Only the claims the realm's AuthZEN catalogue declares are sent. No request header is read.
+  - The answer is `Permit { obligations, advice }`, `Deny` or `Unavailable`. With no `pep` section it is `Unavailable`. `Unavailable` means no policy is held yet or the service can't be reached, and is never a Permit.
+- **Signals.** A `SignalsReceiver` built with `opt.pep = client.pep().cloned()` asks its stream for `urn:iya:sts:secevent:event-type:pep-policies-changed`: always in `local` mode, and in `central` when `permitCacheMs` is set. It verifies the SET like any other and hands the event to the PEP, which pulls with its own token. Without a signal stream, a `local` PEP polls at `pollIntervalMs`.
+- **The demo** protects `GET /orders/<id>` with the PEP when the image is built with `local` (the Dockerfile does) and `demo/gnap.json` has a `pep` section.
 
 ## Demo
 

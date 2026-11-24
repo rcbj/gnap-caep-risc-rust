@@ -7,6 +7,8 @@ mod config;
 mod error;
 mod http;
 mod keys;
+#[cfg(feature = "pep")]
+pub mod pep;
 mod proof;
 mod ssf;
 mod subject;

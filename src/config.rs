@@ -44,6 +44,10 @@ pub struct Config {
     pub max_wait_sec: f64,
     pub transaction_ttl_sec: f64,
     pub ssf: Option<SsfConfig>,
+    /// The embedded iya-sts PEP from the `pep` section (the `pep` feature),
+    /// built but not started: [`crate::Client::create`] starts it.
+    #[cfg(feature = "pep")]
+    pub pep: Option<std::sync::Arc<crate::pep::Pep>>,
 }
 
 pub fn resolve(raw: &Value, base_dir: &Path) -> Result<Config, Error> {
@@ -144,6 +148,20 @@ pub fn resolve(raw: &Value, base_dir: &Path) -> Result<Config, Error> {
             Some(SsfConfig { transmitter, poll_interval_ms: interval })
         }
     };
+    let pep_section = doc.get("pep").filter(|value| !value.is_null());
+    #[cfg(not(feature = "pep"))]
+    if pep_section.is_some() {
+        return Err(fail("config", "pep is configured, and this build has no embedded PEP (the gnap-caep-risc `pep` feature)"));
+    }
+    #[cfg(feature = "pep")]
+    let pep = match pep_section {
+        None => None,
+        Some(section) => Some(crate::pep::build(
+            section,
+            &crate::pep::Defaults { grant_endpoint: &grant_endpoint, application: &application, signals: ssf.is_some(), tls_ca: &tls_ca, base_dir },
+            &key,
+        )?),
+    };
     let display = doc.get("display").and_then(|v| v.as_object()).and_then(|display| {
         let name = display.get("name").and_then(as_str).map(|s| s.to_string());
         let uri = display.get("uri").and_then(as_str).map(|s| s.to_string());
@@ -176,6 +194,8 @@ pub fn resolve(raw: &Value, base_dir: &Path) -> Result<Config, Error> {
         max_wait_sec: number_or(doc, "maxWaitSec", 30.0),
         transaction_ttl_sec: number_or(doc, "transactionTtlSec", 600.0),
         ssf,
+        #[cfg(feature = "pep")]
+        pep,
     })
 }
 

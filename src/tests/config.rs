@@ -80,3 +80,14 @@ fn refuses_a_signals_value_that_is_not_true_or_false() {
     assert_eq!(err.code, "config");
     assert_eq!(err.to_string(), "signals must be true or false");
 }
+
+/// Without the `pep` feature a `pep` section is refused, not ignored: an
+/// application that asked for a PEP never runs without one.
+#[cfg(not(feature = "pep"))]
+#[test]
+fn a_pep_section_is_refused_without_the_feature() {
+    let err = resolve_extra(json!({"pep": {"name": "pep-demo", "assertionKey": "pep-key.pem"}})).must_err();
+    assert_eq!(err.code, "config");
+    assert!(err.message.contains("`pep` feature"), "{}", err.message);
+    resolve_extra(json!({"pep": null})).unwrap();
+}

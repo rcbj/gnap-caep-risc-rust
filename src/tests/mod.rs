@@ -3,6 +3,8 @@
 
 mod client;
 mod config;
+#[cfg(feature = "pep")]
+mod pep;
 mod ssf;
 mod subject;
 mod trust_chain;

@@ -21,12 +21,12 @@ fn b64url(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-fn rsa_key() -> &'static RsaPrivateKey {
+pub(super) fn rsa_key() -> &'static RsaPrivateKey {
     static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
     KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap())
 }
 
-fn other_key() -> &'static RsaPrivateKey {
+pub(super) fn other_key() -> &'static RsaPrivateKey {
     static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
     KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap())
 }
@@ -50,17 +50,17 @@ fn jws(payload: &Value, key: &RsaPrivateKey, header: Option<&str>) -> String {
     format!("{h}.{p}.{}", b64url(&sig))
 }
 
-struct Tx {
-    base: String,
+pub(super) struct Tx {
+    pub(super) base: String,
     queue: Map<String, Value>,
     acked: Vec<String>,
     errs: Map<String, Value>,
-    streams: Vec<Value>,
+    pub(super) streams: Vec<Value>,
     created: i64,
     authorization: String,
 }
 
-fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
+pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let base = format!("http://127.0.0.1:{port}");
@@ -152,7 +152,7 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
     http(404, &json!({"error": "not_found"}).to_string())
 }
 
-fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &RsaPrivateKey, aud: Option<&str>, iss: Option<&str>) -> String {
+pub(super) fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &RsaPrivateKey, aud: Option<&str>, iss: Option<&str>) -> String {
     let mut tx = state.lock().unwrap();
     let jti = format!("jti-{}", tx.queue.len() + tx.acked.len() + 1);
     let base = tx.base.clone();
@@ -179,7 +179,7 @@ fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &Rsa
     jti
 }
 
-fn http(status: u16, body: &str) -> String {
+pub(super) fn http(status: u16, body: &str) -> String {
     format!("HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
 }
 
@@ -187,7 +187,7 @@ fn http_empty(status: u16) -> String {
     format!("HTTP/1.1 {status} No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
 }
 
-fn read_http(stream: &mut impl Read) -> Result<(String, String, HashMap<String, String>, String), String> {
+pub(super) fn read_http(stream: &mut impl Read) -> Result<(String, String, HashMap<String, String>, String), String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {

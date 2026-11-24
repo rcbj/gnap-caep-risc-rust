@@ -276,6 +276,12 @@ pub struct ReceiverOpt {
     pub description: Option<String>,
     pub poll_interval_ms: i64,
     pub max_events: i64,
+    /// The client's embedded PEP (`client.pep().cloned()`; the `pep`
+    /// feature). When it wants policy events (`local`, or `central` with a
+    /// Permit cache), the receiver asks for `pep-policies-changed` and hands
+    /// each verified one to it.
+    #[cfg(feature = "pep")]
+    pub pep: Option<Arc<crate::pep::Pep>>,
 }
 
 impl ReceiverOpt {
@@ -290,6 +296,8 @@ impl ReceiverOpt {
             description: None,
             poll_interval_ms: 5000,
             max_events: 50,
+            #[cfg(feature = "pep")]
+            pep: None,
         }
     }
 
@@ -349,13 +357,30 @@ impl SignalsReceiver {
         if !transmitter.starts_with("https://") && !transmitter.starts_with("http://") {
             return Err(fail("config", "transmitter must be an http(s) URL"));
         }
+        #[allow(unused_mut)]
+        let mut events = opt.events_requested.unwrap_or_else(default_events);
+        #[allow(unused_mut)]
+        let mut handlers: HashMap<String, Vec<Arc<HandlerFn>>> = HashMap::new();
+        // The embedded PEP's policy events ride this stream (iya-sts#1206 D4).
+        #[cfg(feature = "pep")]
+        if let Some(pep) = opt.pep.filter(|pep| crate::pep::wants_events(pep)) {
+            if !events.iter().any(|e| e == crate::pep::POLICIES_CHANGED_EVENT) {
+                events.push(crate::pep::POLICIES_CHANGED_EVENT.to_string());
+            }
+            // `handle` runs handlers only after the SET verified; the PEP
+            // treats the event as a hint and pulls with its own token.
+            let handler: Arc<HandlerFn> = Arc::new(move |event: &SignalEvent| {
+                pep.on_policy_event(&event.payload);
+            });
+            handlers.insert(crate::pep::POLICIES_CHANGED_EVENT.to_string(), vec![handler]);
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 transmitter,
                 on_end: opt.on_end,
                 headers: opt.headers,
                 tls: opt.tls,
-                events: opt.events_requested.unwrap_or_else(default_events),
+                events,
                 end_on: opt.end_on.unwrap_or_else(default_ending),
                 description: opt.description,
                 interval: opt.poll_interval_ms,
@@ -368,7 +393,7 @@ impl SignalsReceiver {
                     ack: Vec::new(),
                     errs: Map::new(),
                     index: Index { sessions: Vec::new(), max: 100_000 },
-                    handlers: HashMap::new(),
+                    handlers,
                 }),
                 flight: Mutex::new(None),
                 running: AtomicBool::new(false),
@@ -379,6 +404,11 @@ impl SignalsReceiver {
                 wait_cv: Condvar::new(),
             }),
         })
+    }
+
+    /// The event types this receiver asks its stream for.
+    pub fn events_requested(&self) -> &[String] {
+        &self.shared.events
     }
 
     pub fn stream(&self) -> Option<Map<String, Value>> {

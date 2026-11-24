@@ -170,7 +170,15 @@ impl Demo {
                 return Err(msg);
             }
         };
-        let client = Arc::new(Client::new(cfg));
+        // `create` starts the embedded PEP when there is a `pep` section.
+        let client = match Client::create(cfg) {
+            Ok(client) => Arc::new(client),
+            Err(err) => {
+                let msg = format!("{}: {}", err.code, err.message);
+                self.state.lock().unwrap().client_err = msg.clone();
+                return Err(msg);
+            }
+        };
         let mut state = self.state.lock().unwrap();
         if let Some(existing) = &state.client {
             return Ok(existing.clone());
@@ -195,7 +203,44 @@ impl Demo {
             ("GET", "/callback") => self.callback(req),
             ("POST", "/logout") => self.logout(req),
             ("POST", "/gnap/push") => self.push(req),
+            #[cfg(feature = "pep")]
+            (method, path) if path.strip_prefix("/orders/").is_some_and(|id| !id.is_empty() && !id.contains('/')) => {
+                let id = path["/orders/".len()..].to_string();
+                self.order(req, method, &id)
+            }
             _ => self.html(404, "Not found", "<h1>Not found</h1>", Vec::new()),
+        }
+    }
+
+    /// A route the embedded PEP protects (the `pep` feature, iya-sts#1206):
+    /// the signed-in person's access to one order, decided by the `pep`
+    /// section's PEP from the grant's subject. A GET is `read` and anything
+    /// else `write`. No sign-in is 401, a Deny 403, and a decision that
+    /// couldn't be made 503: never served.
+    #[cfg(feature = "pep")]
+    fn order(&self, req: &Request, method: &str, id: &str) -> Outcome {
+        use gnap_caep_risc::pep::{Access, Decision};
+        let Some(session) = self.session(req) else {
+            return self.html(401, "Sign in", "<h1>Sign in first</h1><p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>", Vec::new());
+        };
+        let Some(client) = self.try_client() else {
+            return self.html(503, "Unavailable", "<h1>The GNAP client is not configured</h1>", Vec::new());
+        };
+        let action = if method == "GET" { "read" } else { "write" };
+        match client.decide_grant(&session.grant, &Access::new(action, "order", id)) {
+            Decision::Permit { obligations, .. } => {
+                let note = if obligations.is_empty() { String::new() } else { format!("<p><small>{} obligation(s) to discharge.</small></p>", obligations.len()) };
+                let body = format!("<h1>Order {}</h1><p>The PEP permitted <code>{action}</code>.</p>{note}", escape(id));
+                self.html(200, "Order", &body, Vec::new())
+            }
+            Decision::Deny { why } => {
+                let body = format!("<h1>Not allowed</h1><p>The PEP denied <code>{action}</code> on order {}: {}</p>", escape(id), escape(&why));
+                self.html(403, "Forbidden", &body, Vec::new())
+            }
+            Decision::Unavailable { why } => {
+                let body = format!("<h1>No decision</h1><p>The PEP could not decide: {}</p>", escape(&why));
+                self.html(503, "Unavailable", &body, Vec::new())
+            }
         }
     }
 
@@ -440,6 +485,10 @@ impl Demo {
         });
         opt.tls = client.tls();
         opt.poll_interval_ms = interval;
+        #[cfg(feature = "pep")]
+        {
+            opt.pep = client.pep().cloned();
+        }
         let receiver = match SignalsReceiver::new(opt) {
             Ok(receiver) => receiver,
             Err(err) => {

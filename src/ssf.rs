@@ -265,6 +265,8 @@ pub struct SignalEvent {
 pub type EndFn = dyn Fn(&[String], &mut SignalEvent) + Send + Sync;
 pub type HeaderFn = dyn Fn(&str, &str, Option<&str>) -> Vec<(String, String)> + Send + Sync;
 type HandlerFn = dyn Fn(&SignalEvent) + Send + Sync;
+/// Receives the receiver's error lines (see `ReceiverOpt::on_error`).
+pub type ErrorFn = dyn Fn(&str) + Send + Sync;
 
 pub struct ReceiverOpt {
     pub transmitter: String,
@@ -276,6 +278,10 @@ pub struct ReceiverOpt {
     pub description: Option<String>,
     pub poll_interval_ms: i64,
     pub max_events: i64,
+    /// Where the receiver's error lines go: a failed poll, a refused SET, a
+    /// handler that panicked, and a stream update the transmitter refused.
+    /// `None` prints them to standard output, as before.
+    pub on_error: Option<Arc<ErrorFn>>,
     /// The client's embedded PEP (`client.pep().cloned()`; the `pep`
     /// feature). When it wants policy events (`local`, or `central` with a
     /// Permit cache), the receiver asks for `pep-policies-changed` and hands
@@ -296,6 +302,7 @@ impl ReceiverOpt {
             description: None,
             poll_interval_ms: 5000,
             max_events: 50,
+            on_error: None,
             #[cfg(feature = "pep")]
             pep: None,
         }
@@ -336,6 +343,11 @@ struct Shared {
     description: Option<String>,
     interval: i64,
     max_events: i64,
+    on_error: Option<Arc<ErrorFn>>,
+    /// The PEP whose policy events this stream carries, told by `start`
+    /// whether the stream does.
+    #[cfg(feature = "pep")]
+    pep: Option<Arc<crate::pep::Pep>>,
     inner: Mutex<Inner>,
     flight: Mutex<Option<Arc<Flight>>>,
     running: AtomicBool,
@@ -363,7 +375,9 @@ impl SignalsReceiver {
         let mut handlers: HashMap<String, Vec<Arc<HandlerFn>>> = HashMap::new();
         // The embedded PEP's policy events ride this stream (iya-sts#1206 D4).
         #[cfg(feature = "pep")]
-        if let Some(pep) = opt.pep.filter(|pep| crate::pep::wants_events(pep)) {
+        let event_pep = opt.pep.filter(|pep| crate::pep::wants_events(pep));
+        #[cfg(feature = "pep")]
+        if let Some(pep) = event_pep.clone() {
             if !events.iter().any(|e| e == crate::pep::POLICIES_CHANGED_EVENT) {
                 events.push(crate::pep::POLICIES_CHANGED_EVENT.to_string());
             }
@@ -385,6 +399,9 @@ impl SignalsReceiver {
                 description: opt.description,
                 interval: opt.poll_interval_ms,
                 max_events: opt.max_events,
+                on_error: opt.on_error,
+                #[cfg(feature = "pep")]
+                pep: event_pep,
                 inner: Mutex::new(Inner {
                     config: None,
                     stream: None,
@@ -438,6 +455,13 @@ impl SignalsReceiver {
         self.store_config(config);
         self.jwks(true)?;
         let stream = self.ensure_stream()?;
+        // The PEP's heartbeat says whether this stream carries its event.
+        #[cfg(feature = "pep")]
+        if let Some(pep) = &self.shared.pep {
+            let carries = |name: &str| stream.get(name).and_then(Value::as_array).map(|list| list.iter().any(|v| v.as_str() == Some(crate::pep::POLICIES_CHANGED_EVENT)));
+            let carried = carries("events_delivered").or_else(|| carries("events_requested")).unwrap_or(true);
+            pep.set_event_stream(if carried { crate::pep::EventStream::Requested } else { crate::pep::EventStream::Excluded });
+        }
         let endpoint = stream.get("delivery").and_then(|v| v.as_object()).and_then(|d| d.get("endpoint_url")).and_then(|v| v.as_str()).unwrap_or("").to_string();
         if endpoint.is_empty() {
             return Err(fail("ssf", "the stream has no poll endpoint_url"));
@@ -571,7 +595,7 @@ impl SignalsReceiver {
                 stream.as_object().and_then(|one| one.get("delivery")).and_then(|v| v.as_object()).and_then(|d| d.get("method")).and_then(|v| v.as_str()) == Some(POLL)
                     && stream.as_object().and_then(|one| one.get("stream_id")).and_then(|v| v.as_str()).is_some()
             }) {
-                return Ok(mine.as_object().cloned().unwrap_or_default());
+                return Ok(self.with_requested_events(mine.as_object().cloned().unwrap_or_default(), &endpoint));
             }
         } else if status != 404 {
             return Err(fail("ssf", format!("listing the streams at {endpoint} answered {status}: {}", clip(&listed))));
@@ -591,9 +615,56 @@ impl SignalsReceiver {
         }
         Ok(stream.unwrap())
     }
+
+    /// A stream found rather than created can predate an event type this
+    /// receiver asks for now: the embedded PEP's `pep-policies-changed`,
+    /// added once the configuration gained a `pep` section (or moved from
+    /// `central` to `local`). Reused as it was, the transmitter never sends
+    /// that type and the PEP hears of a change only on its fallback poll.
+    /// PATCH merges the missing types in (SSF 1.0, updating a stream). A
+    /// transmitter that refuses leaves the stream as it was, and the refusal
+    /// goes to `on_error`; the receiver still starts.
+    fn with_requested_events(&self, stream: Map<String, Value>, endpoint: &str) -> Map<String, Value> {
+        let listed = |name: &str| stream.get(name).and_then(Value::as_array).map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>());
+        let Some(requested) = listed("events_requested").or_else(|| listed("events_delivered")) else {
+            return stream;
+        };
+        let missing: Vec<String> = self.shared.events.iter().filter(|e| !requested.contains(e)).cloned().collect();
+        if missing.is_empty() {
+            return stream;
+        }
+        let stream_id = stream.get("stream_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut merged = requested;
+        merged.extend(missing.iter().cloned());
+        let body = serde_json::json!({"stream_id": stream_id, "events_requested": merged});
+        let line = match self.shared.call("PATCH", endpoint, Some(&body)) {
+            Ok((200, Value::Object(mut updated))) if updated.get("stream_id").and_then(|v| v.as_str()) == Some(stream_id.as_str()) => {
+                if !updated.contains_key("delivery") {
+                    if let Some(delivery) = stream.get("delivery") {
+                        updated.insert("delivery".into(), delivery.clone());
+                    }
+                }
+                return updated;
+            }
+            Ok((status, parsed)) => format!("ssf: adding {} to stream {stream_id} answered {status}: {}", missing.join(", "), clip(&parsed)),
+            Err(err) => format!("ssf: adding {} to stream {stream_id} failed: {err}", missing.join(", ")),
+        };
+        self.shared.report(&line);
+        stream
+    }
 }
 
 impl Shared {
+    /// An error line to `on_error`, or to standard output without one.
+    fn report(&self, line: &str) {
+        match &self.on_error {
+            Some(hook) => {
+                let _ = catch_unwind(AssertUnwindSafe(|| hook(line)));
+            }
+            None => println!("{line}"),
+        }
+    }
+
     fn background(self: Arc<Self>) {
         {
             let mut entered = self.entered.lock().unwrap();
@@ -609,7 +680,7 @@ impl Shared {
                 Ok(true) => delay = 0,
                 Ok(false) => {}
                 Err(err) => {
-                    println!("ssf: poll failed: {err}");
+                    self.report(&format!("ssf: poll failed: {err}"));
                     delay = (self.interval.saturating_mul(4)).min(60_000);
                 }
             }
@@ -702,7 +773,7 @@ impl Shared {
             match self.handle(&jti, &token) {
                 Ok(()) => self.inner.lock().unwrap().ack.push(jti),
                 Err(err) => {
-                    println!("ssf: SET {jti} refused: {err}");
+                    self.report(&format!("ssf: SET {jti} refused: {err}"));
                     let code = if err.code == "signature" { "invalid_key" } else { "invalid_request" };
                     let mut problem = Map::new();
                     problem.insert("err".into(), Value::String(code.into()));
@@ -779,7 +850,7 @@ impl Shared {
             if ends {
                 let outcome = catch_unwind(AssertUnwindSafe(|| (self.on_end)(&sessions, &mut event)));
                 if outcome.is_err() {
-                    println!("ssf: onEndSessions threw for {kind} (SET {jti} is still acknowledged)");
+                    self.report(&format!("ssf: onEndSessions threw for {kind} (SET {jti} is still acknowledged)"));
                     event.ended = false;
                 }
                 if event.ended {
@@ -799,7 +870,7 @@ impl Shared {
             };
             for handler in handlers {
                 if catch_unwind(AssertUnwindSafe(|| handler(&event))).is_err() {
-                    println!("ssf: a handler for {kind} threw (SET {jti} is still acknowledged)");
+                    self.report(&format!("ssf: a handler for {kind} threw (SET {jti} is still acknowledged)"));
                 }
             }
         }

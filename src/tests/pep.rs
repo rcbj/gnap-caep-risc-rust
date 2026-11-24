@@ -242,6 +242,33 @@ fn a_pep_section_builds_a_started_pep_with_the_librarys_defaults() {
     assert!(resolve(&doc, Path::new(".")).unwrap().pep.is_none(), "a null section is none");
 }
 
+/// `Client::from_file` reads the `pep` section as `resolve` does, and the
+/// PEP it builds is started: the live run of oidc-caep-risc (its #46) found
+/// that library's file reader dropped the section, so this one is held to it
+/// too.
+#[test]
+fn from_file_keeps_the_pep_section() {
+    let pdp = start_pdp();
+    let (dir, file) = key_file(&ec_pem());
+    let doc = json!({
+        "grantEndpoint": format!("{}/gnap", pdp.realm()),
+        "application": "gnap-caep-risc-demo",
+        "privateKey": ec_pem(),
+        "keyProof": "httpsig",
+        "allowInsecure": true,
+        "pep": {"name": "pep-demo", "assertionKey": file, "heartbeatIntervalMs": 60000},
+    });
+    let path = dir.join("gnap.json");
+    std::fs::write(&path, doc.to_string()).unwrap();
+    let client = Client::from_file(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let pep = client.pep().expect("the configuration file's pep section built a PEP");
+    assert_eq!(pep.config().name, "pep-demo");
+    assert!(Path::new(&pep.config().assertion_key).is_absolute(), "relative to the file's directory: {}", pep.config().assertion_key);
+    assert!(pep.status().running);
+    assert!(pdp.count("/xacml/pep/register") >= 1, "and started it");
+}
+
 #[test]
 fn a_bad_section_is_refused() {
     let pdp = start_pdp();
@@ -388,6 +415,84 @@ fn the_receiver_asks_for_the_policy_event_and_hands_it_to_the_pep() {
     receiver.poll_once().unwrap();
     assert!(client.decide(&person(), &access).is_permit());
     assert_eq!(pdp.count("/access/v1/evaluation"), 2, "the event cleared the cache");
+}
+
+/// Waits up to 10 s for a heartbeat whose `policyEvents` is `want` (one
+/// built before the receiver started can still be on its way).
+fn assert_policy_events(pdp: &Pdp, want: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let last = pdp.bodies("/xacml/pep/heartbeat").last().map(|beat| beat["policyEvents"].clone());
+        if last.as_ref().is_some_and(|value| value == want) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "no heartbeat said {want}; the last said {last:?}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// oidc-caep-risc's live run (#46): a stream made while the PEP was
+/// `central` (no event asked for) was found and reused by the `local` PEP's
+/// receiver, so iya-sts never sent it `pep-policies-changed`. A reused stream
+/// now gets the missing type PATCHed in, and the PEP's heartbeat says
+/// `requested`, or `excluded` when the transmitter won't.
+#[test]
+fn a_reused_stream_gets_the_policy_event_added() {
+    let pdp = start_pdp();
+    let caep = "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+    let old = |base: &str, id: &str| json!({
+        "stream_id": id, "iss": base, "aud": "my-app",
+        "delivery": {"method": "urn:ietf:rfc:8936", "endpoint_url": format!("{base}/ssf/poll/{id}")},
+        "events_requested": [caep], "events_delivered": [caep]
+    });
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let receiver_for = |transmitter: &str, pep: Option<Arc<crate::pep::Pep>>| {
+        let mut opt = ReceiverOpt::new(transmitter.to_string(), Arc::new(|_, _| {}));
+        opt.poll_interval_ms = 60_000;
+        opt.headers = Some(Arc::new(|_, _, _| vec![("authorization".into(), "GNAP app-token".into())]));
+        let seen = Arc::clone(&errors);
+        opt.on_error = Some(Arc::new(move |line: &str| seen.lock().unwrap().push(line.to_string())));
+        opt.pep = pep;
+        SignalsReceiver::new(opt).unwrap()
+    };
+    // The section's signals false makes the PEP start out reporting `none`:
+    // a `requested` heartbeat can only come from the receiver.
+    let (_server, tx, transmitter) = start_transmitter();
+    let client = client(pdp, json!({"ssf": {"transmitter": transmitter}}), json!({"permitCacheMs": 30000, "heartbeatIntervalMs": 1000, "signals": false}));
+    tx.lock().unwrap().streams.push(old(&transmitter, "old"));
+    let receiver = receiver_for(&transmitter, client.pep().cloned());
+    receiver.start().unwrap();
+    receiver.stop();
+    assert_eq!(tx.lock().unwrap().created, 0, "the stream was reused, not made again");
+    let patches = tx.lock().unwrap().patches.clone();
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    assert_eq!(patches[0]["stream_id"], "old");
+    let asked: Vec<&str> = patches[0]["events_requested"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(asked.contains(&caep), "what it asked for before is kept: {asked:?}");
+    assert!(asked.contains(&POLICIES_CHANGED_EVENT), "the policy event is added: {asked:?}");
+    let stream = receiver.stream().unwrap();
+    assert!(stream["events_delivered"].as_array().unwrap().iter().any(|e| e == POLICIES_CHANGED_EVENT));
+    assert_eq!(stream["delivery"]["endpoint_url"], format!("{transmitter}/ssf/poll/old"), "the delivery the listing gave is kept");
+    assert!(errors.lock().unwrap().is_empty(), "{:?}", errors.lock().unwrap());
+    assert_policy_events(pdp, "requested");
+
+    // Nothing missing: no PATCH.
+    let again = receiver_for(&transmitter, client.pep().cloned());
+    again.start().unwrap();
+    again.stop();
+    assert_eq!(tx.lock().unwrap().patches.len(), 1, "a stream that already carries the event is left alone");
+
+    // A transmitter that refuses: the receiver still starts, says so through
+    // on_error, and the PEP's heartbeat reports the event excluded.
+    let (_server, tx, transmitter) = start_transmitter();
+    tx.lock().unwrap().refuse_patch = true;
+    tx.lock().unwrap().streams.push(old(&transmitter, "fixed"));
+    let refused = receiver_for(&transmitter, client.pep().cloned());
+    refused.start().unwrap();
+    refused.stop();
+    assert_eq!(tx.lock().unwrap().patches.len(), 1);
+    assert!(errors.lock().unwrap().iter().any(|l| l.contains("answered 405")), "{:?}", errors.lock().unwrap());
+    assert_policy_events(pdp, "excluded");
 }
 
 #[cfg(feature = "local")]

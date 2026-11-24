@@ -56,8 +56,11 @@ pub(super) struct Tx {
     acked: Vec<String>,
     errs: Map<String, Value>,
     pub(super) streams: Vec<Value>,
-    created: i64,
+    pub(super) created: i64,
     authorization: String,
+    /// Every PATCH body, and whether PATCH is refused (405).
+    pub(super) patches: Vec<Value>,
+    pub(super) refuse_patch: bool,
 }
 
 pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
@@ -72,6 +75,8 @@ pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, St
         streams: Vec::new(),
         created: 0,
         authorization: String::new(),
+        patches: Vec::new(),
+        refuse_patch: false,
     }));
     let shared = state.clone();
     let handle = thread::spawn(move || {
@@ -110,6 +115,24 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
     }
     if path == "/ssf/stream" && method == "GET" {
         return http(200, &Value::Array(tx.streams.clone()).to_string());
+    }
+    if path == "/ssf/stream" && method == "PATCH" {
+        let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        tx.patches.push(parsed.clone());
+        if tx.refuse_patch {
+            return http(405, &json!({"error": "method_not_allowed"}).to_string());
+        }
+        let Some(stream) = tx.streams.iter_mut().find(|item| item["stream_id"] == parsed["stream_id"]) else {
+            return http(404, &json!({"error": "not_found"}).to_string());
+        };
+        if let Some(events) = parsed.get("events_requested") {
+            stream["events_requested"] = events.clone();
+            stream["events_delivered"] = events.clone();
+        }
+        // An answer without delivery: the receiver keeps the one it listed.
+        let mut answer = stream.clone();
+        answer.as_object_mut().unwrap().remove("delivery");
+        return http(200, &answer.to_string());
     }
     if path == "/ssf/stream" && method == "POST" {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);

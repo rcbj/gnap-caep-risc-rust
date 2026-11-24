@@ -77,6 +77,15 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 
 The script never prints a password or secret. When it generates the test user's password it writes it to `demo/generated/<user>.password` (created 0600) and prints only that path.
 
+### The demo with its embedded PEP
+
+```bash
+ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or local
+docker compose up --build
+```
+
+`--pep central|local` (with `--pep-name`, default `pep-gnap-demo`) also does [docs/remote-pep.md](docs/remote-pep.md)'s steps 2 to 6: the PEP's service account in `remote-peps`, a P-256 key made with your `openssl` in `demo/generated/pep-key.pem` (0600, never printed, never in the image), the key certified and the PEP bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy (read on an order needs an `acr`; anything else is denied), which it then enforces. The realm root is not touched. It writes the `pep` section into `demo/gnap.json`. Run it again, against the same iya-sts or a fresh one, to switch the mode: the account, the key and the policy are kept (a policy is written only while the application enforces none, so your edits survive), and a kept key is certified again for a new account. `--dry-run` lists these calls too. Then `GET /orders/42` is 200 and `POST /orders/42` 403. Enforcing the demo application's policy decides nothing at GNAP issuance: its grant asks for plain access rights (`ssf.read`, `ssf.manage`), and iya-sts asks an application's policy only about an `authorization_details` type that application declares.
+
 ### The iya-sts trust chain: `tlsCa`
 
 `tlsCa` (demo default `generated/idp-ca.pem`, relative to `demo/`) is the iya-sts TLS listener CA trust chain the library verifies the listener against. The install script, `scripts/configure_iya_sts.py`, writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS Issuing CA, Intermediate, Root), or the chain the TLS handshake presents when that is missing. It prints the path, the trust anchor's subject and its SHA-256.
@@ -102,7 +111,7 @@ The trust chain goes in the way a user's does: the script copies the checkout (w
 - Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
 - `LIVE_STS_PORT` (default 18558) and `LIVE_DEMO_PORT` (default 18658) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
 
-A registered GNAP key is not replaced, so run it against a fresh iya-sts each time.
+The script starts a fresh iya-sts each time. `--pep` sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed`. That last check fails today: iya-sts's GNAP subject scope (`gnap/gnap_signals.ts` `scope()`) refuses the event's application subject on a GNAP web client's stream (`STS-SSF-0029`, "went to 0 of 1 stream(s)"), so a `local` PEP hears of a change only at its heartbeat or poll. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
 
 The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
 

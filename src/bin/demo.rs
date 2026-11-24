@@ -289,12 +289,32 @@ impl Demo {
             let events: Vec<Value> = state.events.iter().map(|(kind, jti)| serde_json::json!({"type": kind, "jti": jti})).collect();
             (state.receiver_state.clone(), events)
         };
-        let body = serde_json::json!({
+        #[allow(unused_mut)]
+        let mut body = serde_json::json!({
             "signedIn": subject.is_some(),
             "subject": subject,
             "receiver": receiver,
             "events": events,
         });
+        // The embedded PEP's status, which holds no secret: its `syncToken`
+        // is the version of the policy held, not a credential.
+        #[cfg(feature = "pep")]
+        if let Some(pep) = self.try_client().as_ref().and_then(|client| client.pep().cloned()) {
+            let s = pep.status();
+            body["pep"] = serde_json::json!({
+                "name": s.name,
+                "mode": if s.mode == gnap_caep_risc::pep::Mode::Local { "local" } else { "central" },
+                "application": s.application,
+                "registered": s.registered,
+                "running": s.running,
+                "holdsPolicy": s.holds_policy,
+                "policyCount": s.policy_count,
+                "syncToken": s.sync_token,
+                "eventsReceived": s.events_received,
+                "eventStream": s.event_stream.as_str(),
+                "lastError": s.last_error,
+            });
+        }
         reply(200, vec![("content-type".into(), "application/json".into()), ("cache-control".into(), "no-store".into())], serde_json::to_vec(&body).unwrap_or_default())
     }
 

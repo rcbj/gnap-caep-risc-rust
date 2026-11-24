@@ -28,7 +28,7 @@ api() { curl -s -H "Authorization: Bearer $TOKEN" \
 
 ### 1. Register the application
 
-Register the GNAP client in iya-sts as usual; `scripts/configure_iya_sts.py` does it for the demo. Note its identifier: it is the `application` the PEP is bound to (the configuration's own `application` by default).
+Register the GNAP client in iya-sts as usual; `scripts/configure_iya_sts.py` does it for the demo, and with `--pep central` (or `local`) does steps 2 to 6 for the demo too (see [The demo](#the-demo)). Note its identifier: it is the `application` the PEP is bound to (the configuration's own `application` by default).
 
 ### 2. Create the PEP's service account
 
@@ -235,7 +235,17 @@ Against iya-sts `feature/2028` with iya-pep `c0d61ca`, all 58 cases agree: `cent
 
 ## The demo
 
-Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, 403 on a Deny and 503 on `Unavailable`.
+Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, 403 on a Deny and 503 on `Unavailable`. `GET /live-status` carries the PEP's `status()` under `pep`.
+
+One command sets it up:
+
+```bash
+ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or local
+```
+
+It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account, key and policy and switches the mode. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.
+
+Known: iya-sts's GNAP subject scope (`gnap/gnap_signals.ts` `scope()`) refuses the event's application subject on a GNAP web client's stream (`STS-SSF-0029`, "went to 0 of 1 stream(s)"), so a `local` PEP hears of a change only at its heartbeat or poll. Until iya-sts exempts that subject, `local` applies a policy change at the next heartbeat (about 30 s) rather than at once.
 
 ## See also
 

@@ -899,9 +899,7 @@ def main():
         if pep:
             pep_result["central"] = central
             # THEN local: the same image and iya-sts, the copy that says local.
-            # The local demo reuses the central one's poll stream, so let that
-            # one acknowledge session-revoked first; a SET it took but had not
-            # acknowledged is delivered again and would end the new sign-in.
+            # Guards against the central demo's unacknowledged session-revoked SET being redelivered on the reused stream and ending the local sign-in (without it, 3 of 3 runs failed).
             time.sleep(5)
             start_demo(image, demo_name, demo_port, demo_origin, mounts,
                        env={"GNAP_CONFIG": "/app/demo/" + PEP_LOCAL_CONFIG})

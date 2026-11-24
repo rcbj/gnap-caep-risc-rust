@@ -245,7 +245,7 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 
 It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account, key and policy and switches the mode. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.
 
-Known: iya-sts's GNAP subject scope (`gnap/gnap_signals.ts` `scope()`) refuses the event's application subject on a GNAP web client's stream (`STS-SSF-0029`, "went to 0 of 1 stream(s)"), so a `local` PEP hears of a change only at its heartbeat or poll. Until iya-sts exempts that subject, `local` applies a policy change at the next heartbeat (about 30 s) rather than at once.
+Live (`scripts/live_iya_sts.py --pep`, iya-sts `feature/2028` at `a6cb55cb3`): `central` and `local` give 200 for read and 403 for write, and after the application's own policy changes, `local` applies it by `pep-policies-changed` in 1.1 s. That needs iya-sts's GNAP subject scope to let the event's application subject through to a GNAP client's stream (`a6cb55cb3`); before it, the event was refused (`STS-SSF-0029`) and `local` waited for its next heartbeat.
 
 ## See also
 

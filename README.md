@@ -111,7 +111,7 @@ The trust chain goes in the way a user's does: the script copies the checkout (w
 - Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
 - `LIVE_STS_PORT` (default 18558) and `LIVE_DEMO_PORT` (default 18658) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
 
-The script starts a fresh iya-sts each time. `--pep` sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed`. That last check fails today: iya-sts's GNAP subject scope (`gnap/gnap_signals.ts` `scope()`) refuses the event's application subject on a GNAP web client's stream (`STS-SSF-0029`, "went to 0 of 1 stream(s)"), so a `local` PEP hears of a change only at its heartbeat or poll. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
+The script starts a fresh iya-sts each time. `--pep` sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed`. Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:live-2028-gnapscope`) both modes give 200/403 and the flip arrives by event in 1.1 s. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
 
 The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
 

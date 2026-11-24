@@ -36,33 +36,26 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 
 ## Embedded PEP (features `pep` and `local`)
 
-The [iya-pep](https://github.com/rcbj/iya-pep-rust) crate, wired in (iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)): an application asks iya-sts's policy whether the person a GNAP grant names may act on a resource.
+Ask iya-sts's authorization policy whether a signed-in person may act on a resource, through the embedded Remote PEP (the shared [`iya-pep`](https://github.com/rcbj/iya-pep-rust) crate; iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)). **[docs/remote-pep.md](docs/remote-pep.md) is the full guide**: setting up iya-sts, choosing `central` or `local`, every configuration member, obligations, policy-change events, operating it and troubleshooting.
 
 ```toml
 gnap-caep-risc = { version = "…", features = ["pep"] }    # central: AuthZEN at iya-sts
 gnap-caep-risc = { version = "…", features = ["local"] }  # local too: decided in process
 ```
 
-Add a `pep` section to `gnap.json`. It is off unless present, and a build without the `pep` feature refuses it rather than ignoring it:
-
 ```json
-"pep": { "name": "pep-orders", "mode": "local", "assertionKey": "generated/pep-key.pem" }
+"pep": { "name": "pep-orders", "mode": "local", "assertionKey": "pep-key.pem" }
 ```
 
-- **Defaults from this library:**
-  - `pdpUrl` is the iya-sts realm the grant endpoint belongs to, with the realm prefix: `https://sts/realm/acme/gnap` (or a named server's `…/realm/acme/<as>/gnap`) gives `https://sts/realm/acme`, and `https://sts/gnap` gives `https://sts`.
-  - `application` is `application`, the GNAP client registered in iya-sts.
-  - `signals` is on when this library runs a Shared Signals receiver (signals on and a transmitter configured); `tlsCa` is the library's.
-  - `assertionKey` is read relative to the configuration's directory, like `privateKey`.
-  - iya-pep's README lists every member.
-- **The PEP's key is its own.** Resolving refuses a configuration where the assertion key is the client instance key (`privateKey`, behind every `httpsig`, `jwsd` or `mtls` proof), compared by JWK thumbprint. Certify the key and bind the PEP to the application with iya-sts's `issue-pep-credential`.
-- **Starting.** `Client::create` (and `from_file`) starts the PEP: registration and, in `local` mode, the first policy pull. `Client::new` does not; call `client.pep().unwrap().start()` yourself if you use it.
-- **Deciding:**
-  - `client.decide_grant(&grant, &Access::new("read", "order", "42"))`, or `client.decide(&person, …)`. A grant that has ended is a Deny without asking: no subject, revoked by this client, or an expired access token (rotate with `ensure_fresh` first).
-  - The subject is the grant's `Person`: the username from the `account` subject identifier, else the ID token's `preferred_username`, else `sub`; its properties are the ID token's claims (`acr`, `amr`, `auth_time`, ...). Only the claims the realm's AuthZEN catalogue declares are sent. No request header is read.
-  - The answer is `Permit { obligations, advice }`, `Deny` or `Unavailable`. With no `pep` section it is `Unavailable`. `Unavailable` means no policy is held yet or the service can't be reached, and is never a Permit.
-- **Signals.** A `SignalsReceiver` built with `opt.pep = client.pep().cloned()` asks its stream for `urn:iya:sts:secevent:event-type:pep-policies-changed`: always in `local` mode, and in `central` when `permitCacheMs` is set. It verifies the SET like any other and hands the event to the PEP, which pulls with its own token. Without a signal stream, a `local` PEP polls at `pollIntervalMs`.
-- **The demo** protects `GET /orders/<id>` with the PEP when the image is built with `local` (the Dockerfile does) and `demo/gnap.json` has a `pep` section.
+```rust
+match client.decide_grant(&grant, &Access::new("read", "order", "42")) {
+    Decision::Permit { obligations, .. } => { /* discharge them, then serve */ }
+    Decision::Deny { .. } => { /* 403 */ }
+    Decision::Unavailable { .. } => { /* 503: fail closed, never a Permit */ }
+}
+```
+
+The section is off unless present, and a build without the feature refuses it. The PEP's key must be its own, and only the claims the realm's AuthZEN catalogue declares are sent. The demo protects `GET /orders/<id>` with the PEP.
 
 ## Demo
 

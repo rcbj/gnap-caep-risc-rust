@@ -34,7 +34,19 @@ saved chain for its own HTTPS client.
 --pep (or LIVE_PEP=1) adds the demo's embedded PEP: the install script sets it up
 (--pep central), the demo is checked on /orders/42 in central and then local
 mode, and the application's own policy is flipped to deny read, which local
-mode must apply by pep-policies-changed. LIVE_KEEP=1 leaves the containers.
+mode must apply by pep-policies-changed. A second test user, gnap-demo-denied,
+gets attr1=not-abc123: GET /attribute-protected must be 200 for the first user
+and 403 for it, in both modes. iya-sts's stored XACML for the policy must be
+src/tests/demo_orders_policy.xml, what the unit tests' PEP holds. LIVE_KEEP=1
+leaves the containers.
+
+--ui (or LIVE_UI=1) provisions the same way (the install script with --pep
+local, both test users, the demo image) and then drives a real headless
+Chromium in Playwright's image (the Dockerfile's ui-browser stage running
+scripts/live_ui_browser.py) through the demo's UI and iya-sts's sign-in pages:
+the allowed user gets 200 on both protected pages, and the denied user, in a
+fresh browser context, 403 on /attribute-protected. Screenshots and the
+browser's summary go to LIVE_UI_OUT (default: a new temporary directory, kept).
 
 --authzen runs the embedded PEP's differential test instead (#39): it registers
 the client, provisions src/tests/authzen_cases.json (people, catalogue rows,
@@ -1177,9 +1189,108 @@ def authzen_main():
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# --ui: the demo's PEP-protected pages through a real browser (#41). The same
+# provisioning as --pep (a fresh iya-sts, the install script, here with
+# --pep local, the allowed and the denied test users, the demo image built
+# and run), then scripts/live_ui_browser.py drives headless Chromium in
+# Playwright's own image, never on the host.
+# ---------------------------------------------------------------------------
+
+# The Dockerfile's ui-browser stage is this image with the matching
+# Playwright Python package and scripts/live_ui_browser.py.
+PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright/python:v1.49.0-noble"
+UI_BROWSER_IMAGE = PROFILE["repo"] + "-live:ui-browser"
+
+
+def run_browser(demo_origin, out, users):
+    """scripts/live_ui_browser.py in the ui-browser image, as the invoking
+    user, on the host network. Passwords reach it as -e NAME."""
+    name = PROFILE["repo"] + "-live-ui-browser"
+    docker_rm(name)
+    env = os.environ.copy()
+    args = ["docker", "run", "--rm", "--name", name, "--network", "host", "--ipc", "host", *as_me(),
+            "-e", "HOME=/tmp", "-e", f"DEMO_URL={demo_origin}", "-e", "UI_OUT=/out",
+            "-v", f"{out}:/out"]
+    for role, (user, password) in users.items():
+        env[f"UI_{role.upper()}_SECRET"] = password
+        args += ["-e", f"UI_{role.upper()}_USER={user}", "-e", f"UI_{role.upper()}_SECRET"]
+    args += [UI_BROWSER_IMAGE]
+    print("+ " + " ".join(args), flush=True)
+    completed = subprocess.run(args, check=False, text=True, env=env)
+    summary = out / "summary.json"
+    return completed.returncode, (json.loads(summary.read_text(encoding="utf-8")) if summary.exists() else None)
+
+
+def ui_main():
+    sts_port = int(os.environ.get("LIVE_STS_PORT") or 18558)
+    demo_port = int(os.environ.get("LIVE_DEMO_PORT") or 18658)
+    if sts_port in FORBIDDEN_PORTS or demo_port in FORBIDDEN_PORTS or sts_port == demo_port:
+        raise SystemExit("LIVE_STS_PORT and LIVE_DEMO_PORT must not bind 3000, 8081, or 18481 to 18495")
+    if os.environ.get("IYA_STS_URL", "").strip():
+        raise SystemExit("--ui starts its own fresh iya-sts; unset IYA_STS_URL")
+    secret = os.environ.get("ADMIN_API_CLIENT_SECRET") or os.environ.get("STS_ADMIN_API_CLIENT_SECRET") or secrets.token_urlsafe(24)
+    password = os.environ.get(PROFILE["user_env"]) or secrets.token_urlsafe(18)
+    denied_password = secrets.token_urlsafe(18)
+    username = PROFILE["test_user"]
+    # The screenshots and the browser's summary stay after the run.
+    out = Path(os.environ.get("LIVE_UI_OUT") or tempfile.mkdtemp(prefix=PROFILE["repo"] + "-ui-out-")).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    sts_origin, sts_name = prepare_sts(sts_port, secret)
+    demo_origin = f"http://127.0.0.1:{demo_port}"
+    demo_name = PROFILE["repo"] + "-live-demo"
+    image = PROFILE["repo"] + "-live:demo"
+    tools_image = PROFILE["repo"] + "-live:tools"
+    work = Path(tempfile.mkdtemp(prefix=PROFILE["repo"] + "-ui-"))
+    try:
+        wait_port(sts_port, 120)
+        wait_ready(sts_origin, 90)
+        context = work / "context"
+        copy_context(context)
+        config = context / PROFILE["config_file"]
+        rewrite_config(config, config, sts_origin, demo_origin)
+        tls_ca = json.loads(config.read_text(encoding="utf-8")).get("tlsCa")
+        chain_file = config.parent / tls_ca
+        generated_dir = config.parent / "generated"
+        docker("build", "--target", "tools", "-t", tools_image, str(context))
+        configure_demo(tools_image, config.parent, sts_origin, demo_origin, demo_port, username, password, secret, pep="local")
+        written = json.loads(config.read_text(encoding="utf-8")).get("pep") or {}
+        if written.get("mode") != "local":
+            raise RuntimeError(f"the install script did not write a local pep section: {json.dumps(written)}")
+        application = json.loads(config.read_text(encoding="utf-8"))["application"]
+        client = Client(chain_file)
+        token = mint_admin(client, sts_origin, secret)
+        add_denied_user(client, sts_origin, token, denied_password)
+        docker("build", "-t", image, str(context))
+        mounts = [(generated_dir / "client.key", "/app/demo/generated/client.key"),
+                  (generated_dir / "client.crt", "/app/demo/generated/client.crt"),
+                  (config.parent / PEP_KEY, "/app/demo/" + PEP_KEY)]
+        start_demo(image, demo_name, demo_port, demo_origin, mounts)
+        docker("build", "--target", "ui-browser", "-t", UI_BROWSER_IMAGE, str(context))
+        code, summary = run_browser(demo_origin, out, {"allowed": (username, password), "denied": (DENIED_USER, denied_password)})
+        result = {"ok": code == 0 and bool(summary) and summary.get("ok") is True, "application": application,
+                  "pepMode": "local", "browser": PLAYWRIGHT_IMAGE, "out": str(out)}
+        result.update({"ui": summary or {"error": f"the browser exited {code} without a summary"}})
+        print(json.dumps(result, indent=2))
+        if not result["ok"]:
+            raise RuntimeError(f"the UI run failed ({code}); screenshots in {out}")
+    finally:
+        if os.environ.get("LIVE_KEEP", "") == "1":
+            print(f"LIVE_KEEP=1: left {demo_name} and {sts_name} running", flush=True)
+        else:
+            docker_rm(demo_name)
+            docker_rm(sts_name)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 if __name__ == "__main__":
     try:
-        authzen_main() if "--authzen" in sys.argv[1:] else main()
+        if "--authzen" in sys.argv[1:]:
+            authzen_main()
+        elif "--ui" in sys.argv[1:] or os.environ.get("LIVE_UI", "") in ("1", "true", "yes"):
+            ui_main()
+        else:
+            main()
     except Exception as err:
         print(str(err), file=sys.stderr)
         sys.exit(1)

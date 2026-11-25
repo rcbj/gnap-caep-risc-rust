@@ -30,7 +30,7 @@ The driver copies the checkout to a scratch context (no `.git`, `target`, `demo/
 
 The registrar passes over only a `set-custom-claim` refusal that says "not one of" (an iya-sts without the `gnap_access_token` claim set). Any other refusal fails.
 
-The demo source is `src/bin/demo.rs`. `.gitignore` ignores `/bin/` at the root only, so the demo is tracked.
+The demo source is `src/bin/demo.rs`. Signed in, it has a **Session** tab and a **Policy enforcement** tab (`/?tab=pep`): `pep_fragment` draws `pep_json` (the PEP's `status()`) as four `<details class="card pane" id="pep-…" open>` panes (Decisions, Cached policy, The PEP, Control plane), everything escaped, problems in `.problem`, a notice without a `pep` section; `demo/public/pep.js` refetches `GET /pep-status.html` every 2 s and keeps closed panes closed; `GET /pep-status` is JSON; both 401 without a session. Every page sends a CSP with `connect-src 'self'` (pep.js's fetch needs it). Its tests are `src/bin/demo.rs`'s `mod tests`. `.gitignore` ignores `/bin/` at the root only, so the demo is tracked.
 
 ## tlsCa, the iya-sts trust chain
 

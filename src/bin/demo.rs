@@ -197,6 +197,9 @@ impl Demo {
             ("GET", "/healthz") => plain(200, "ok"),
             ("GET", "/styles.css") => self.static_file("styles.css", "text/css; charset=utf-8"),
             ("GET", "/app.js") => self.static_file("app.js", "text/javascript; charset=utf-8"),
+            ("GET", "/pep.js") => self.static_file("pep.js", "text/javascript; charset=utf-8"),
+            ("GET", "/pep-status") => self.pep_status_page(req, false),
+            ("GET", "/pep-status.html") => self.pep_status_page(req, true),
             ("GET", "/") => self.home(req),
             ("GET", "/live-status") => self.live_status(req),
             ("GET", "/login") => self.login(),
@@ -259,7 +262,21 @@ impl Demo {
                 .as_ref()
                 .map(|person| person.email.clone().filter(|value| !value.is_empty()).or_else(|| person.name.clone().filter(|value| !value.is_empty())).unwrap_or_else(|| person.sub.clone()))
                 .unwrap_or_default();
-            let body = format!("<h1>Signed in</h1><p>{}</p><form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>", escape(&who));
+            let tab = if req.query.get("tab").map(String::as_str) == Some("pep") { "pep" } else { "session" };
+            let content = if tab == "pep" {
+                format!("<div id=\"pep-panel\">{}</div><script src=\"/pep.js\" defer></script>", pep_fragment(client.as_deref()))
+            } else {
+                format!("<p>{}</p>", escape(&who))
+            };
+            let tab_link = |id: &str, href: &str, label: &str| {
+                let on = id == tab;
+                format!("<a class=\"page-tab\" role=\"tab\" href=\"{href}\" aria-selected=\"{on}\"{}>{label}</a>", if on { " aria-current=\"page\"" } else { "" })
+            };
+            let body = format!(
+                "<h1>Signed in</h1><nav class=\"page-tabs\" role=\"tablist\" aria-label=\"Sections\">{}{}</nav><div role=\"tabpanel\" id=\"panel\">{content}</div><form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>",
+                tab_link("session", "/", "Session"),
+                tab_link("pep", "/?tab=pep", "Policy enforcement"),
+            );
             return self.html(200, "Signed in", &body, Vec::new());
         }
         if client.is_none() {
@@ -271,6 +288,24 @@ impl Demo {
             return self.html(200, "GNAP demo", &body, Vec::new());
         }
         self.html(200, "GNAP demo", "<h1>GNAP CAEP RISC demo</h1><p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>", Vec::new())
+    }
+
+    /// `GET /pep-status` (JSON) and `/pep-status.html` (the Policy
+    /// enforcement tab's fragment): what the embedded PEP holds and has done.
+    /// For a signed-in browser only, like the page that shows it. Nothing in
+    /// it is secret: counts, times, tokens that name policy versions, and the
+    /// PEP key's public thumbprint.
+    fn pep_status_page(&self, req: &Request, html: bool) -> Outcome {
+        if self.session(req).is_none() {
+            return plain(401, "sign in first");
+        }
+        let client = self.try_client();
+        let no_store = ("cache-control".to_string(), "no-store".to_string());
+        if html {
+            reply(200, vec![("content-type".into(), "text/html; charset=utf-8".into()), no_store], pep_fragment(client.as_deref()).into_bytes())
+        } else {
+            reply(200, vec![("content-type".into(), "application/json".into()), no_store], pep_json(client.as_deref()).to_string().into_bytes())
+        }
     }
 
     /// The sign-in and the Shared Signals events, for scripts/live_iya_sts.py. It carries no token
@@ -578,6 +613,9 @@ impl Demo {
         if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("content-type")) {
             headers.push(("content-type".into(), "text/html; charset=utf-8".into()));
         }
+        // Scripts and styles from this origin only; pep.js fetches the tab's
+        // fragment from it, which `connect-src 'self'` allows.
+        headers.push(("content-security-policy".into(), CSP.into()));
         reply(status, headers, page.into_bytes())
     }
 
@@ -687,6 +725,148 @@ fn write_response(stream: &mut TcpStream, outgoing: &Outgoing) -> std::io::Resul
     stream.write_all(head.as_bytes())?;
     stream.write_all(&outgoing.body)?;
     stream.flush()
+}
+
+const CSP: &str = "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+
+#[cfg(feature = "pep")]
+fn pep_json(client: Option<&Client>) -> Value {
+    use serde_json::json;
+    let Some(pep) = client.and_then(|client| client.pep()) else {
+        return json!({"enabled": false, "why": "no pep section is configured"});
+    };
+    let s = pep.status();
+    let ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
+    let mode = if s.mode == gnap_caep_risc::pep::Mode::Local { "local" } else { "central" };
+    json!({
+        "enabled": true,
+        "name": s.name, "mode": mode, "application": s.application, "pdpUrl": s.pdp_url,
+        "protocolVersion": s.protocol_version, "registered": s.registered, "running": s.running,
+        "eventStream": s.event_stream.as_str(), "keyThumbprint": s.key_thumbprint, "problems": s.last_error,
+        "policy": {
+            "held": s.holds_policy, "count": s.policy_count, "syncToken": s.sync_token,
+            "catalogueToken": s.catalogue_token, "catalogueSubjectClaims": s.catalogue_subject_properties,
+            "sinceUpdateMs": ms(s.since_policy_update), "sinceLastPullMs": ms(s.since_last_pull),
+            "untilNextPullMs": ms(s.until_next_pull), "pulls": s.pulls, "pullsChanged": s.pulls_changed,
+            "pullFailures": s.pull_failures, "eventsReceived": s.events_received, "eventsIgnored": s.events_ignored,
+            "sinceLastEventMs": ms(s.since_last_event),
+        },
+        "decisions": {
+            "total": s.decisions, "allowed": s.allowed, "denied": s.refused, "unavailable": s.unavailable,
+            "undischargeable": s.undischargeable, "meanMicros": s.mean_decision_micros, "maxMicros": s.max_decision_micros,
+            "permitCacheEntries": s.permit_cache_entries, "permitCacheHits": s.permit_cache_hits,
+        },
+        "controlPlane": {
+            "uptimeMs": ms(s.uptime), "registrations": s.registrations, "heartbeats": s.heartbeats,
+            "heartbeatFailures": s.heartbeat_failures, "sinceLastHeartbeatMs": ms(s.since_last_heartbeat),
+            "untilNextHeartbeatMs": ms(s.until_next_heartbeat), "recordsQueued": s.records_queued,
+            "recordsShipped": s.records_shipped, "recordsDropped": s.records_dropped,
+        },
+    })
+}
+
+#[cfg(not(feature = "pep"))]
+fn pep_json(_client: Option<&Client>) -> Value {
+    serde_json::json!({"enabled": false, "why": "this demo was built without the pep feature"})
+}
+
+/// A duration as a person reads it: `ago` for one past, else one to come.
+fn human(d: Option<Duration>, ago: bool) -> String {
+    let Some(d) = d else { return "—".into() };
+    let s = d.as_secs();
+    if s == 0 {
+        return if ago { "just now".into() } else { "now".into() };
+    }
+    let text = if s < 120 {
+        format!("{s} s")
+    } else if s < 7200 {
+        format!("{} min {} s", s / 60, s % 60)
+    } else {
+        format!("{} h {} min", s / 3600, s % 3600 / 60)
+    };
+    if ago { format!("{text} ago") } else { format!("in {text}") }
+}
+
+/// The Policy enforcement tab's content: four collapsible panes drawn by the
+/// server, everything escaped, and fetched again every two seconds by
+/// `pep.js`, which keeps a pane the person closed closed (by its stable id).
+fn pep_fragment(client: Option<&Client>) -> String {
+    let v = pep_json(client);
+    if v["enabled"] != Value::Bool(true) {
+        return format!(
+            "<p class=\"notice\">No embedded PEP: {}. Add a <code>pep</code> section to the configuration (<code>scripts/configure_iya_sts.py --pep central</code> writes one) and build with the <code>local</code> (or <code>pep</code>) feature; see <code>docs/remote-pep.md</code>.</p>",
+            escape(v["why"].as_str().unwrap_or(""))
+        );
+    }
+    let text = |x: &Value| match x {
+        Value::String(s) if s.is_empty() => "—".to_string(),
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => if *b { "yes".into() } else { "no".into() },
+        Value::Null => "—".into(),
+        other => other.to_string(),
+    };
+    let dur = |x: &Value, ago: bool| human(x.as_u64().map(Duration::from_millis), ago);
+    let micros = |x: &Value| x.as_u64().map(|m| if m >= 1000 { format!("{:.1} ms", m as f64 / 1000.0) } else { format!("{m} µs") }).unwrap_or_else(|| "—".into());
+    let (p, d, c) = (&v["policy"], &v["decisions"], &v["controlPlane"]);
+    let local = v["mode"] == "local";
+    let mut decisions = vec![
+        ("Decisions".to_string(), text(&d["total"])),
+        ("Allowed".into(), text(&d["allowed"])),
+        ("Denied".into(), text(&d["denied"])),
+        ("Unavailable (no decision; refused)".into(), text(&d["unavailable"])),
+        ("Stopped by an obligation".into(), text(&d["undischargeable"])),
+        ("Mean time per decision".into(), micros(&d["meanMicros"])),
+        ("Slowest decision".into(), micros(&d["maxMicros"])),
+    ];
+    if !local {
+        decisions.push(("Permit cache".into(), format!("{} held, {} answered from it", text(&d["permitCacheEntries"]), text(&d["permitCacheHits"]))));
+    }
+    let mut policy = vec![
+        ("Policies held".to_string(), if local { text(&p["count"]) } else { "— (central mode: iya-sts decides)".into() }),
+        ("Last policy update".into(), dur(&p["sinceUpdateMs"], true)),
+        ("Last pull (changed or not)".into(), dur(&p["sinceLastPullMs"], true)),
+        ("Next scheduled pull".into(), dur(&p["untilNextPullMs"], false)),
+        ("Pulls".into(), format!("{} ({} brought changes, {} failed)", text(&p["pulls"]), text(&p["pullsChanged"]), text(&p["pullFailures"]))),
+        ("Policy-change events".into(), format!("{} acted on, {} for another PEP; last {}", text(&p["eventsReceived"]), text(&p["eventsIgnored"]), dur(&p["sinceLastEventMs"], true))),
+        ("Catalogue claims sent".into(), text(&p["catalogueSubjectClaims"])),
+    ];
+    if local {
+        policy.push(("Policy set version".into(), text(&p["syncToken"])));
+    }
+    policy.push(("Catalogue version".into(), text(&p["catalogueToken"])));
+    let the_pep = vec![
+        ("Name".to_string(), text(&v["name"])),
+        ("Mode".into(), text(&v["mode"])),
+        ("Application".into(), text(&v["application"])),
+        ("iya-sts".into(), text(&v["pdpUrl"])),
+        ("Registered".into(), text(&v["registered"])),
+        ("Running".into(), format!("{} (up {})", text(&v["running"]), dur(&c["uptimeMs"], false).trim_start_matches("in "))),
+        ("Policy-change events on the stream".into(), text(&v["eventStream"])),
+        ("Protocol version".into(), text(&v["protocolVersion"])),
+        ("Key thumbprint".into(), text(&v["keyThumbprint"])),
+    ];
+    let control = vec![
+        ("Heartbeats".to_string(), format!("{} ({} failed)", text(&c["heartbeats"]), text(&c["heartbeatFailures"]))),
+        ("Last heartbeat".into(), dur(&c["sinceLastHeartbeatMs"], true)),
+        ("Next heartbeat".into(), dur(&c["untilNextHeartbeatMs"], false)),
+        ("Registrations".into(), text(&c["registrations"])),
+        ("Decision records".into(), format!("{} queued, {} sent, {} dropped", text(&c["recordsQueued"]), text(&c["recordsShipped"]), text(&c["recordsDropped"]))),
+    ];
+    let mut out = String::new();
+    let problems = v["problems"].as_str().unwrap_or("");
+    if !problems.is_empty() {
+        out.push_str(&format!("<p class=\"problem\">{}</p>", escape(problems)));
+    }
+    for (title, rows) in [("Decisions", decisions), ("Cached policy", policy), ("The PEP", the_pep), ("Control plane", control)] {
+        let id: String = format!("pep-{}", title.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>());
+        out.push_str(&format!("<details class=\"card pane\" id=\"{id}\" open><summary><h2>{}</h2></summary><table class=\"facts\">", escape(title)));
+        for (k, val) in rows {
+            out.push_str(&format!("<tr><th>{}</th><td>{}</td></tr>", escape(&k), escape(&val)));
+        }
+        out.push_str("</table></details>");
+    }
+    out.push_str("<p><small>Refreshed every 2 seconds. <a href=\"/pep-status\">As JSON</a>.</small></p>");
+    out
 }
 
 fn plain(status: u16, body: &str) -> Outcome {
@@ -835,4 +1015,79 @@ fn replace_origin(value: &str, public: &str) -> String {
         next.set_path("/");
     }
     next.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_as_a_person_reads_them() {
+        assert_eq!(human(None, true), "—");
+        assert_eq!(human(Some(Duration::from_millis(400)), true), "just now");
+        assert_eq!(human(Some(Duration::from_millis(400)), false), "now");
+        assert_eq!(human(Some(Duration::from_secs(42)), true), "42 s ago");
+        assert_eq!(human(Some(Duration::from_secs(300)), false), "in 5 min 0 s");
+        assert_eq!(human(Some(Duration::from_secs(7300)), true), "2 h 1 min ago");
+    }
+
+    #[test]
+    fn no_client_or_no_pep_says_so() {
+        assert!(pep_fragment(None).contains("No embedded PEP"));
+        assert_eq!(pep_json(None)["enabled"], false);
+    }
+
+    fn request(path: &str, query: &[(&str, &str)]) -> Request {
+        Request {
+            method: "GET".into(),
+            path: path.into(),
+            query: query.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_status_routes_need_a_session_and_pages_carry_the_csp() {
+        let demo = Arc::new(Demo::new("http://127.0.0.1:1".into(), true, "1".into()));
+        for path in ["/pep-status", "/pep-status.html"] {
+            assert_eq!(demo.dispatch(&request(path, &[])).outgoing.status, 401, "{path} without a session");
+        }
+        let page = demo.dispatch(&request("/", &[("tab", "pep")])).outgoing;
+        let csp = page.headers.iter().find(|(k, _)| k == "content-security-policy").map(|(_, v)| v.clone()).unwrap_or_default();
+        assert!(csp.contains("connect-src 'self'"), "pep.js may fetch its fragment: {csp}");
+        assert!(csp.contains("script-src 'self'"));
+    }
+
+    #[cfg(feature = "pep")]
+    #[test]
+    fn the_tab_draws_every_pane_and_escapes() {
+        use p256::pkcs8::EncodePrivateKey;
+        let pem = |seed: u8| p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap().to_pkcs8_pem(Default::default()).unwrap().to_string();
+        let dir = std::env::temp_dir().join(format!("gnap-demo-pep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pep.pem"), pem(4)).unwrap();
+        // An application name that must be escaped, and an iya-sts nobody answers on.
+        let doc = serde_json::json!({
+            "grantEndpoint": "http://127.0.0.1:9/gnap", "application": "<b>app</b>", "privateKey": pem(5),
+            "keyProof": "httpsig", "allowInsecure": true,
+            "pep": {"name": "pep-demo", "mode": "central", "assertionKey": "pep.pem", "timeoutMs": 300}
+        });
+        let client = Client::create(Client::resolve(&doc, &dir).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let person = Person { sub: "s".into(), claims: Default::default(), assertion_verified: false, iss: None, uid: Some("alice".into()), email: None, name: None, preferred_username: None, sid: None, acr: None, amr: Vec::new() };
+        client.decide(&person, &gnap_caep_risc::pep::Access::new("read", "order", "1"));
+        let html = pep_fragment(Some(&client));
+        for (title, id) in [("Decisions", "pep-decisions"), ("Cached policy", "pep-cached-policy"), ("The PEP", "pep-the-pep"), ("Control plane", "pep-control-plane")] {
+            assert!(html.contains(&format!("<details class=\"card pane\" id=\"{id}\" open><summary><h2>{title}</h2></summary>")), "{title}: a collapsible pane, open, with the id pep.js keeps it closed by");
+        }
+        assert!(html.contains("<th>Decisions</th><td>1</td>"), "the decision was counted");
+        assert!(html.contains("<th>Unavailable (no decision; refused)</th><td>1</td>"));
+        assert!(html.contains("class=\"problem\""), "iya-sts is unreachable, and the tab says so");
+        assert!(html.contains("Permit cache"), "central mode shows the cache");
+        assert!(html.contains("&lt;b&gt;app&lt;/b&gt;") && !html.contains("<b>app</b>"), "escaped");
+        assert!(!html.contains("<script"), "the fragment carries no script");
+        let v = pep_json(Some(&client));
+        assert_eq!((v["enabled"].clone(), v["mode"].clone(), v["decisions"]["unavailable"].clone()), (Value::Bool(true), Value::from("central"), Value::from(1)));
+    }
 }

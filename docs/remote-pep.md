@@ -28,7 +28,7 @@ api() { curl -s -H "Authorization: Bearer $TOKEN" \
 
 ### 1. Register the application
 
-Register the GNAP client in iya-sts as usual; `scripts/configure_iya_sts.py` does it for the demo, and with `--pep central` (or `local`) does steps 2 to 6 for the demo too (see [The demo](#the-demo)). Note its identifier: it is the `application` the PEP is bound to (the configuration's own `application` by default).
+Register the GNAP client in iya-sts as usual; `scripts/configure_iya_sts.py` does it for the demo, and with `--pep` (local; or `--pep central`) does steps 2 to 6 for the demo too (see [The demo](#the-demo)). Note its identifier: it is the `application` the PEP is bound to (the configuration's own `application` by default).
 
 ### 2. Create the PEP's service account
 
@@ -117,7 +117,7 @@ gnap-caep-risc = { version = "…", features = ["pep"] }    # central
 gnap-caep-risc = { version = "…", features = ["local"] }  # local (includes central)
 ```
 
-Without the feature a `pep` section is refused when the configuration is read, rather than silently ignored.
+Without the feature a `pep` section is refused when the configuration is read, rather than silently ignored. A section that names no `mode` is `local`, so a build with `pep` alone must name `"mode": "central"`; otherwise it is refused the same way.
 
 ## Configure
 
@@ -134,7 +134,7 @@ Add a `pep` section to `gnap.json`. The PEP is off unless it is present.
 | Member | Default here | What it is |
 |---|---|---|
 | `name` | required | The PEP's service account (step 2). |
-| `mode` | `central` | `central` or `local`. |
+| `mode` | `local` | `local` (the PEP pulls its application's policies, caches them in memory and decides in process) or `central` (it asks iya-sts for every decision). |
 | `assertionKey` | required | The PEP's private key in PEM: a path; a relative one is read from the configuration file's directory, like `privateKey`. The file is re-read when it changes. |
 | `pdpUrl` | the iya-sts realm the grant endpoint belongs to: `https://sts/realm/acme/gnap` gives `https://sts/realm/acme`, and `https://sts/gnap` gives `https://sts` | iya-sts, with `/realm/<id>` for a realm. |
 | `application` | the configuration's `application` | The application the PEP is bound to (step 3). |
@@ -240,7 +240,7 @@ Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` w
 One command sets it up:
 
 ```bash
-ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or local
+ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or --pep (local)
 ```
 
 It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account, key and policy and switches the mode. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.

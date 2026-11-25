@@ -7,8 +7,8 @@
     ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --pep central
     python scripts/configure_iya_sts.py --config demo/gnap.json --dry-run
 
---pep central|local also sets up the demo's embedded PEP (docs/remote-pep.md,
-steps 2 to 6) and writes the configuration's pep section. Run again, it keeps
+--pep [central|local] also sets up the demo's embedded PEP (docs/remote-pep.md,
+steps 2 to 6; local when the mode is left out) and writes the configuration's pep section. Run again, it keeps
 the PEP's account, key and policy, binds it again and switches the mode.
 
 The management API token is minted as sts-api-client (client_credentials, HTTP Basic), audienced
@@ -88,7 +88,7 @@ def admin_tls():
 def usage():
     return """Usage: python scripts/configure_iya_sts.py [--config path] [--idp url] [--public-url url]
                                         [--test-user name | --no-test-user]
-                                        [--pep central|local] [--pep-name name] [--dry-run]
+                                        [--pep [MODE]] [--pep-name name] [--dry-run]
 
   --config        The demo's GNAP configuration (default: demo/gnap.json)
   --idp           iya-sts's base URL; the realm's, e.g. https://host/realm/acme, for a trust realm
@@ -103,7 +103,8 @@ def usage():
                   path is printed. With that variable set, an existing user's password is
                   replaced.
   --no-test-user  Do not create a test user.
-  --pep           Also set up the demo's embedded PEP in this mode, central or local:
+  --pep [MODE]    Also set up the demo's embedded PEP in this mode, local (the default: it
+                  caches the application's policies and decides in process) or central:
                   its service account in remote-peps, a P-256 key made with openssl in
                   generated/pep-key.pem beside the configuration (0600, never printed),
                   the key certified and the PEP bound to the application, the catalogue
@@ -159,7 +160,12 @@ def parse_args(argv, env=None):
         elif arg == "--dry-run":
             out["dry_run"] = True
         elif arg == "--pep":
-            out["pep"] = value().strip()
+            # The mode may be left out: then local, iya-pep's default (the
+            # PEP caches the application's policies and decides in process).
+            if index + 1 < len(argv) and not argv[index + 1].startswith("--"):
+                out["pep"] = value().strip()
+            else:
+                out["pep"] = "local"
             if out["pep"] not in PEP_MODES:
                 raise RuntimeError(f"--pep is central or local, not {out['pep']}")
         elif arg == "--pep-name":

@@ -138,7 +138,9 @@ fn rsa_pem() -> String {
 /// section.
 fn config(pdp: &Pdp, extra: Value, pep: Value, pep_key: Option<&str>) -> Result<crate::Config, crate::Error> {
     let (dir, file) = key_file(pep_key.unwrap_or(&ec_pem()));
-    let mut section = json!({"name": "pep-demo", "assertionKey": file, "heartbeatIntervalMs": 60000});
+    // central by name: these tests ask the stub PDP for each decision, and
+    // a section that names no mode is local (iya-pep's default).
+    let mut section = json!({"name": "pep-demo", "mode": "central", "assertionKey": file, "heartbeatIntervalMs": 60000});
     for (k, v) in pep.as_object().unwrap() {
         section[k] = v.clone();
     }
@@ -256,7 +258,9 @@ fn from_file_keeps_the_pep_section() {
         "privateKey": ec_pem(),
         "keyProof": "httpsig",
         "allowInsecure": true,
-        "pep": {"name": "pep-demo", "assertionKey": file, "heartbeatIntervalMs": 60000},
+        // central by name: the stub PDP answers it without a policy pull,
+        // and a section that names no mode is local (iya-pep's default).
+        "pep": {"name": "pep-demo", "mode": "central", "assertionKey": file, "heartbeatIntervalMs": 60000},
     });
     let path = dir.join("gnap.json");
     std::fs::write(&path, doc.to_string()).unwrap();
@@ -514,4 +518,24 @@ fn local_mode_fails_closed_then_decides_in_process() {
     assert!(matches!(client.decide(&person(), &Access::new("write", "order", "42")), Decision::Deny { .. }));
     assert_eq!(pdp.count("/access/v1/evaluation"), 0, "decided in process");
     assert!(pdp.count("/xacml/pep/policies") >= 2);
+}
+
+/// A `pep` section that names no mode is `local`: the PEP pulls the
+/// application's policies and decides in process.
+#[cfg(feature = "local")]
+#[test]
+fn a_section_without_a_mode_is_local() {
+    let pdp = start_pdp();
+    let (dir, file) = key_file(&ec_pem());
+    let doc = json!({
+        "grantEndpoint": format!("{}/gnap", pdp.realm()),
+        "application": "gnap-caep-risc-demo",
+        "privateKey": ec_pem(),
+        "keyProof": "httpsig",
+        "allowInsecure": true,
+        "pep": {"name": "pep-demo", "assertionKey": file, "heartbeatIntervalMs": 60000},
+    });
+    let resolved = resolve(&doc, &dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(resolved.pep.unwrap().status().mode, crate::pep::Mode::Local);
 }

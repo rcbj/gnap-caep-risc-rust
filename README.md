@@ -12,6 +12,8 @@ docker build --target test .
 
 The `test` stage runs `cargo test`, then `cargo test --all-features`, in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
+With every feature, the suite also drives the demo's two PEP-protected pages through its real routes (`src/bin/demo.rs`, `mod tests::protected`): a `local` PEP holds the demo application's own policy (`src/tests/demo_orders_policy.xml`, the XACML iya-sts stores for the install script's ALFA) against a stub realm whose PIP answers `attr1` per person. A signed-in person with `attr1=abc123` and an `acr` gets 200 on `GET /attribute-protected` and `GET /orders/42`; `attr1` another value or absent gets 403 on `/attribute-protected`; `POST /orders/42` is 403; a sign-in without an `acr` gets 403 on `GET /orders/42`; signed out, both are 401. Each status is checked against the decision's `http_status()`.
+
 Crate name: `gnap-caep-risc`. A pull request merged into `main` publishes the crate to crates.io after the test workflow succeeds on that commit. A direct push does not. The token is the `CARGO_REGISTRY_TOKEN` repository secret. A release happens when the library's files changed since the last release's tag: `publish.yml` takes one patch above the highest published version, publishes it, and creates the matching tag and GitHub Release. A change to tests, the demo, or the docs releases nothing. To choose a version or start a new minor, raise `VERSION`; the version is stamped in CI and is not committed, so the manifests can trail what is published.
 
 ## Three calls
@@ -33,6 +35,19 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 `signals: false` does not start the Shared Signals receiver, does not require transmitter metadata, and drops `ssf.read` and `ssf.manage` from the GNAP access. The resolved configuration includes `signals: false`. If those two rights were the only ones, configuration fails and asks for another right the authorization server grants. Any other value fails with `signals must be true or false`.
 
 `ssf.pollIntervalMs` is the poll interval in milliseconds. `SignalsReceiver::stop` waits until the background poll has finished.
+
+### Subjects: only the people signed in here
+
+The receiver tells the transmitter which people it cares about (SSF 1.0 §8.1.3.2 and §8.1.3.3). The application then receives events only about people signed in to it, even from a transmitter whose `default_subjects` is `NONE`. iya-sts (rcbj/iya-sts#2234) also sends an application's stream events only about people with an active session or grant there.
+
+- **Sign-in:** `SignalsReceiver::track` calls Add Subject (`add_subject_endpoint` from the transmitter's metadata) for a person it was not following yet. The subject is in the form events are matched on: `iss_sub` with the transmitter's issuer, or `email` when there is no subject identifier. The call is authenticated as stream management is. A person tracked before `start` is added by `start`.
+- **Sign-out:** `untrack` (local sign-out or revoke), or an event that ends a sign-in, calls Remove Subject. It does so only when no other tracked sign-in of that person remains, and only for a subject the transmitter accepted.
+- **Failures:** a refusal or failure goes to `ReceiverOpt::on_error` once, without the person's identifier, and is not retried. A 403 is iya-sts#2234's race, a person with no active session yet. A sign-in never fails because of it.
+- **Threads:** there is no timer. The calls run inline: in `track`'s or `untrack`'s caller, in `start`, and on the poll thread for an event that ends a sign-in.
+- **Turning it off:** `ssf.addSubjects: false` (default `true`; `ReceiverOpt::add_subjects`) turns it off. A transmitter without the endpoints is not called, and with `signals: false` there is no receiver.
+- **The PEP's events:** with an embedded PEP that wants policy events, `start` also adds the application, `{format: opaque, id: <application>}`, first and never removes it. A stream that names people carries only events about them, and `pep-policies-changed` is about the application (the `application` member of its subject).
+- **Expired sign-ins:** a tracked sign-in that expires without being untracked keeps its person subscribed until another of their sign-ins ends.
+- **The demo:** it tracks every sign-in, not only the first.
 
 ## Credentials
 
@@ -176,7 +191,9 @@ The trust chain goes in the way a user's does: the script copies the checkout (w
 - Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
 - `LIVE_STS_PORT` (default 18558) and `LIVE_DEMO_PORT` (default 18658) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
 
-The script starts a fresh iya-sts each time. `--pep` (or `LIVE_PEP=1`) sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed` within `PEP_FLIP_TIMEOUT` seconds (30). It does not check `/attribute-protected`. Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:live-2028-gnapscope`) both modes gave 200/403 and the flip arrived by event in 1.1 s; that run predates `/attribute-protected` and the `attr1` setup. The nightly run does not pass `--pep`, because `main` lacks iya-sts #2026–#2028. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
+The script starts a fresh iya-sts each time. `--pep` (or `LIVE_PEP=1`) sets the demo's PEP up with the install script (`--pep central`) and adds a second test user, `gnap-demo-denied`, with `attr1=not-abc123`. In `central` and then `local` it requires `GET /orders/42` 200 and `POST` 403, and `GET /attribute-protected` 200 for the test user and 403 for the denied one (whose `GET /orders/42` stays 200). It requires that iya-sts stored exactly `src/tests/demo_orders_policy.xml` for the install script's ALFA (`storedXacmlIsTheUnitFixture`), the policy the unit tests use. Then it rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed` within `PEP_FLIP_TIMEOUT` seconds (30). Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:local`) all of it passed, the flip by event in 1.2 s.
+
+`--ui` (or `LIVE_UI=1`) is the same provisioning with `--pep local`, then a real headless browser: the Dockerfile's `ui-browser` stage (Playwright's `mcr.microsoft.com/playwright/python:v1.49.0-noble` with its Python package) runs `scripts/live_ui_browser.py` on the host network. Chromium clicks **Sign in**, completes iya-sts's sign-in and GNAP approval pages, comes back through `/callback`, and opens `/attribute-protected` and `/orders/42` from the top bar and by address, checking each response's status and the page text. The test user gets 200 on both and 403 on `POST /orders/42` (sent with the browser's cookies), signs out from the user menu, and then both pages are 401. The denied user signs in in a fresh browser context (GNAP cannot make iya-sts ask again; new cookies do) and gets 403 on `/attribute-protected`, 200 on `GET /orders/42` and 403 on `POST`. Screenshots and `summary.json` go to `LIVE_UI_OUT` (default: a new temporary directory, kept); the JSON summary is printed last and any mismatch fails the run. The browser trusts iya-sts's self-signed development listener (`ignore_https_errors`). All 31 checks passed against `iya-sts:local` (`feature/2028`). The nightly run does not pass `--pep`, because `main` lacks iya-sts #2026–#2028. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
 
 The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
 

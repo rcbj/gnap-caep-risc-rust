@@ -81,6 +81,17 @@ fn refuses_a_signals_value_that_is_not_true_or_false() {
     assert_eq!(err.to_string(), "signals must be true or false");
 }
 
+#[test]
+fn add_subjects_defaults_on_and_takes_only_a_boolean() {
+    let tx = "https://idp.example/tx";
+    assert!(resolve_extra(json!({"ssf": {"transmitter": tx}})).unwrap().ssf.unwrap().add_subjects, "on by default");
+    assert!(!resolve_extra(json!({"ssf": {"transmitter": tx, "addSubjects": false}})).unwrap().ssf.unwrap().add_subjects);
+    let err = resolve_extra(json!({"ssf": {"transmitter": tx, "addSubjects": "no"}})).must_err();
+    assert_eq!(err.to_string(), "ssf.addSubjects must be true or false");
+    // Signals off: no receiver, so nothing to add.
+    assert!(resolve_extra(json!({"signals": false, "access": ["openid"], "ssf": {"transmitter": tx, "addSubjects": true}})).unwrap().ssf.is_none());
+}
+
 /// Without the `pep` feature a `pep` section is refused, not ignored: an
 /// application that asked for a PEP never runs without one.
 #[cfg(not(feature = "pep"))]

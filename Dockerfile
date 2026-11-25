@@ -24,6 +24,16 @@ WORKDIR /app
 COPY demo demo
 COPY scripts scripts
 
+# The browser of `scripts/live_iya_sts.py --ui`: Playwright's own image (its
+# Chromium is the one this Playwright version drives) plus the matching Python
+# package, which the image does not carry. Only the live UI run builds it
+# (`--target ui-browser`); nothing on the host is installed.
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble AS ui-browser
+RUN pip3 install --no-cache-dir --break-system-packages playwright==1.49.0
+WORKDIR /ui
+COPY scripts/live_ui_browser.py live_ui_browser.py
+CMD ["python3", "/ui/live_ui_browser.py"]
+
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app

@@ -22,15 +22,12 @@
 //! type and properties, and the advice ids), `Deny`, or `Unavailable`.
 
 use super::pep::{ec_pem, key_file};
-use super::ssf::read_http;
+use super::stub_realm::{self, policy_entry, Realm};
 use crate::pep::{Access, Decision};
 use crate::{resolve, Client, Continuation, Grant, Person};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
-use std::io::Write;
-use std::net::TcpListener;
 use std::path::Path;
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -179,33 +176,8 @@ fn pep_section(table: &Value, group: &Value, mode: &str) -> Value {
 // Offline: a stub realm per group, and a local Client.
 // ---------------------------------------------------------------------------
 
-/// A stub iya-sts realm at `/realm/az`: what a `local` PEP calls, serving one
-/// group's policies, the table's catalogue and its directory, and the GNAP
-/// continuation URI `revoke` deletes.
-struct Realm {
-    base: String,
-    policies: Value,
-    catalogue: Value,
-    directory: Value,
-    seen: Mutex<Vec<String>>,
-}
-
-impl Realm {
-    fn realm(&self) -> String {
-        format!("{}/realm/az", self.base)
-    }
-}
-
-/// `PolicyId` (or `PolicySetId`) and the kind of a policy document.
-fn described(document: &str) -> (String, &'static str) {
-    let start = document.find("<Policy").expect("a Policy or PolicySet element");
-    let kind = if document[start..].starts_with("<PolicySet") { "PolicySet" } else { "Policy" };
-    let marker = format!("{kind}Id=\"");
-    let at = document[start..].find(&marker).unwrap() + start + marker.len();
-    let end = document[at..].find('"').unwrap() + at;
-    (document[at..end].to_string(), kind)
-}
-
+/// The stub realm (`src/tests/stub_realm.rs`) at `/realm/az`, serving one
+/// group's policies, the table's catalogue and its directory.
 fn start_realm(table: &Value, group: &Value) -> &'static Realm {
     let policies: Vec<Value> = group["policies"]
         .as_array()
@@ -214,74 +186,11 @@ fn start_realm(table: &Value, group: &Value) -> &'static Realm {
         .map(|p| {
             let document = text(&p["xacml"]);
             assert!(!document.is_empty(), "a policy of {} has no xacml in the table", group["application"]);
-            let (id, kind) = described(&document);
-            json!({"name": p["name"].as_str().unwrap_or("own"), "policyId": id, "kind": kind, "version": "1.0",
-                   "isRoot": p["root"].as_bool().unwrap_or(false), "description": "", "document": document})
+            policy_entry(p["name"].as_str().unwrap_or("own"), &document, p["root"].as_bool().unwrap_or(false))
         })
         .collect();
-    let fga: Vec<&Value> = if group["fga"].as_bool().unwrap_or(false) { vec![&group["application"]] } else { vec![] };
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let realm: &'static Realm = Box::leak(Box::new(Realm {
-        base: format!("http://127.0.0.1:{port}"),
-        policies: json!({"syncToken": "p1", "root": "", "policies": policies, "withheld": [], "note": ""}),
-        catalogue: json!({"syncToken": "c1", "realm": "az", "rows": table["catalogue"],
-                          "settings": {"obligationsProfile": table["obligationsProfile"]}, "fgaApplications": fga}),
-        directory: table["directory"].clone(),
-        seen: Mutex::new(Vec::new()),
-    }));
-    thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut tcp) = stream else { continue };
-            tcp.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            thread::spawn(move || {
-                let Ok((method, path, _headers, body)) = read_http(&mut tcp) else { return };
-                let (status, kind, text) = serve(realm, &method, &path, &body);
-                let _ = tcp.write_all(format!("HTTP/1.1 {status} OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", text.len()).as_bytes());
-            });
-        }
-    });
-    realm
-}
-
-fn serve(realm: &Realm, method: &str, path: &str, body: &str) -> (u16, &'static str, String) {
-    let path = path.trim_start_matches("/realm/az");
-    realm.seen.lock().unwrap().push(format!("{method} {path}"));
-    let json = |status: u16, value: Value| (status, "application/json", value.to_string());
-    match path {
-        p if p.starts_with("/gnap/continue/") && method == "DELETE" => (204, "application/json", String::new()),
-        "/oauth2/token" => json(200, json!({"access_token": "pep-token", "token_type": "DPoP", "expires_in": 300})),
-        "/xacml/pep/register" => json(201, json!({"registered": true, "identity": "uid=pep-authzen-offline,ou=users,dc=example,dc=com"})),
-        "/xacml/pep/heartbeat" => json(200, json!({"acknowledged": true, "current": true})),
-        "/xacml/pep/authzen-catalogue" => json(200, realm.catalogue.clone()),
-        "/xacml/pep/policies" => json(200, realm.policies.clone()),
-        "/admin-api/pep-audit" => json(200, json!({"acknowledged": 0})),
-        "/xacml/pip" => (200, "application/xml", pip_answer(&realm.directory, body)),
-        "/access/v1/evaluation" => json(500, json!({"error": "this stub decides nothing; the case ran in central mode"})),
-        _ => json(404, json!({"error": "not_found"})),
-    }
-}
-
-/// The directory's attributes for the PIP query's subject, every one of
-/// them (the PEP keeps those its policy asks for).
-fn pip_answer(directory: &Value, query: &str) -> String {
-    let subject = query
-        .split("subject:subject-id\"")
-        .nth(1)
-        .and_then(|rest| rest.split("<AttributeValue").nth(1))
-        .and_then(|rest| rest.split('>').nth(1))
-        .and_then(|rest| rest.split('<').next())
-        .unwrap_or("");
-    let mut attributes = String::new();
-    for (id, value) in directory[subject].as_object().into_iter().flatten() {
-        attributes.push_str(&format!(
-            "<Attribute AttributeId=\"{id}\" IncludeInResult=\"false\"><AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">{}</AttributeValue></Attribute>",
-            value.as_str().unwrap_or("")
-        ));
-    }
-    format!(
-        "<PIPResponse xmlns=\"urn:sts:xacml:pip:1.0\"><Attributes xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\">{attributes}</Attributes></PIPResponse>"
-    )
+    let fga: Vec<Value> = if group["fga"].as_bool().unwrap_or(false) { vec![group["application"].clone()] } else { vec![] };
+    stub_realm::start("az", policies, table["catalogue"].clone(), table["obligationsProfile"].clone(), fga, table["directory"].clone())
 }
 
 fn local_client(table: &Value, group: &Value, realm: &Realm) -> Client {

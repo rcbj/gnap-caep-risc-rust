@@ -43,6 +43,7 @@ The receiver tells the transmitter which people it cares about (SSF 1.0 §8.1.3.
 - **Failures:** a refusal or failure goes to `ReceiverOpt::on_error` once, without the person's identifier, and is not retried. A 403 is iya-sts#2234's race, a person with no active session yet. A sign-in never fails because of it.
 - **Threads:** there is no timer. The calls run inline: in `track`'s or `untrack`'s caller, in `start`, and on the poll thread for an event that ends a sign-in.
 - **Turning it off:** `ssf.addSubjects: false` (default `true`; `ReceiverOpt::add_subjects`) turns it off. A transmitter without the endpoints is not called, and with `signals: false` there is no receiver.
+- **The PEP's events:** with an embedded PEP that wants policy events, `start` also adds the application, `{format: opaque, id: <application>}`, first and never removes it. A stream that names people carries only events about them, and `pep-policies-changed` is about the application (the `application` member of its subject).
 - **Expired sign-ins:** a tracked sign-in that expires without being untracked keeps its person subscribed until another of their sign-ins ends.
 - **The demo:** it tracks every sign-in, not only the first.
 

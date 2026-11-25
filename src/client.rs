@@ -63,7 +63,15 @@ struct State {
     jwks: Option<Vec<Map<String, Value>>>,
     pending: HashMap<String, Pending>,
     used: VecDeque<String>,
+    /// The continuation URIs of the grants this client revoked, newest
+    /// last, so `decide_grant` denies them without asking.
+    #[cfg(feature = "pep")]
+    revoked: VecDeque<String>,
 }
+
+/// How many revoked grants `decide_grant` remembers.
+#[cfg(feature = "pep")]
+const REVOKED_REMEMBERED: usize = 10_000;
 
 pub struct Client {
     pub config: Config,
@@ -72,7 +80,21 @@ pub struct Client {
 
 impl Client {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Ok(Self::new(read_file(path.as_ref())?))
+        Self::create(read_file(path.as_ref())?)
+    }
+
+    /// `new`, and then starts the embedded PEP when the configuration has a
+    /// `pep` section (the `pep` feature): its registration and, in `local`
+    /// mode, the first policy pull, then its own thread. An unreachable
+    /// service is retried there, and decisions are `Unavailable` until then.
+    /// Without a `pep` section this is `new`.
+    pub fn create(config: Config) -> Result<Self, Error> {
+        let client = Self::new(config);
+        #[cfg(feature = "pep")]
+        if let Some(pep) = &client.config.pep {
+            pep.start().map_err(|e| fail("config", e.message))?;
+        }
+        Ok(client)
     }
 
     pub fn resolve(raw: &Value, base_dir: &Path) -> Result<Config, Error> {
@@ -92,6 +114,8 @@ impl Client {
                 jwks: None,
                 pending: HashMap::new(),
                 used: VecDeque::new(),
+                #[cfg(feature = "pep")]
+                revoked: VecDeque::new(),
             }),
         }
     }
@@ -238,7 +262,51 @@ impl Client {
         let cont = grant.continuation.as_ref().ok_or_else(|| fail("protocol", "this grant has no continuation, so it cannot be revoked"))?;
         self.check_origin(&cont.uri, "continue.uri")?;
         self.signed_json("DELETE", &cont.uri, None, Some(&cont.access_token))?;
+        #[cfg(feature = "pep")]
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.revoked.len() >= REVOKED_REMEMBERED {
+                state.revoked.pop_front();
+            }
+            state.revoked.push_back(cont.uri.clone());
+        }
         Ok(())
+    }
+
+    /// The embedded PEP, when the configuration has a `pep` section.
+    #[cfg(feature = "pep")]
+    pub fn pep(&self) -> Option<&std::sync::Arc<crate::pep::Pep>> {
+        self.config.pep.as_ref()
+    }
+
+    /// Decides one access for the person a grant named, with the embedded
+    /// PEP. With no `pep` section the answer is `Unavailable`: nothing here
+    /// permits by default.
+    #[cfg(feature = "pep")]
+    pub fn decide(&self, person: &Person, access: &crate::pep::Access) -> crate::pep::Decision {
+        match &self.config.pep {
+            Some(pep) => pep.decide(&crate::pep::subject_for(person), access),
+            None => crate::pep::Decision::Unavailable { why: "no pep section is configured".into() },
+        }
+    }
+
+    /// `decide` for a grant's subject. A grant that has ended is denied
+    /// without asking: one with no subject (nobody signed in), one this
+    /// client revoked, or one whose access token has expired (rotate it
+    /// with `ensure_fresh` and decide on the grant that returns).
+    #[cfg(feature = "pep")]
+    pub fn decide_grant(&self, grant: &Grant, access: &crate::pep::Access) -> crate::pep::Decision {
+        let deny = |why: &str| crate::pep::Decision::Deny { why: why.into() };
+        let Some(person) = &grant.subject else { return deny("the grant names no subject") };
+        if let Some(cont) = &grant.continuation {
+            if self.state.lock().unwrap().revoked.iter().any(|uri| uri == &cont.uri) {
+                return deny("the grant was revoked");
+            }
+        }
+        if grant.expires_at.is_some_and(|at| at <= now_ms()) {
+            return deny("the grant's access token has expired");
+        }
+        self.decide(person, access)
     }
 
     pub fn ensure_fresh(&self, grant: &Grant) -> Result<Grant, Error> {

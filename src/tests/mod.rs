@@ -1,8 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Iya CyberSecurity Solutions, LLC
 // SPDX-License-Identifier: MIT
 
+#[cfg(feature = "local")]
+mod authzen;
 mod client;
 mod config;
+mod install_script;
+#[cfg(feature = "pep")]
+mod pep;
 mod ssf;
 mod subject;
 mod trust_chain;

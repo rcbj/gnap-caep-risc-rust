@@ -21,12 +21,12 @@ fn b64url(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-fn rsa_key() -> &'static RsaPrivateKey {
+pub(super) fn rsa_key() -> &'static RsaPrivateKey {
     static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
     KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap())
 }
 
-fn other_key() -> &'static RsaPrivateKey {
+pub(super) fn other_key() -> &'static RsaPrivateKey {
     static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
     KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap())
 }
@@ -50,17 +50,24 @@ fn jws(payload: &Value, key: &RsaPrivateKey, header: Option<&str>) -> String {
     format!("{h}.{p}.{}", b64url(&sig))
 }
 
-struct Tx {
-    base: String,
+pub(super) struct Tx {
+    pub(super) base: String,
     queue: Map<String, Value>,
     acked: Vec<String>,
     errs: Map<String, Value>,
-    streams: Vec<Value>,
-    created: i64,
+    pub(super) streams: Vec<Value>,
+    pub(super) created: i64,
     authorization: String,
+    /// Every PATCH body, and whether PATCH is refused (405).
+    pub(super) patches: Vec<Value>,
+    pub(super) refuse_patch: bool,
+    /// When not 0, every poll is answered with this status (a transmitter down).
+    pub(super) poll_status: u16,
+    /// How many polls arrived, answered or failed.
+    pub(super) polls: usize,
 }
 
-fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
+pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let base = format!("http://127.0.0.1:{port}");
@@ -72,6 +79,10 @@ fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
         streams: Vec::new(),
         created: 0,
         authorization: String::new(),
+        patches: Vec::new(),
+        refuse_patch: false,
+        poll_status: 0,
+        polls: 0,
     }));
     let shared = state.clone();
     let handle = thread::spawn(move || {
@@ -111,6 +122,24 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
     if path == "/ssf/stream" && method == "GET" {
         return http(200, &Value::Array(tx.streams.clone()).to_string());
     }
+    if path == "/ssf/stream" && method == "PATCH" {
+        let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        tx.patches.push(parsed.clone());
+        if tx.refuse_patch {
+            return http(405, &json!({"error": "method_not_allowed"}).to_string());
+        }
+        let Some(stream) = tx.streams.iter_mut().find(|item| item["stream_id"] == parsed["stream_id"]) else {
+            return http(404, &json!({"error": "not_found"}).to_string());
+        };
+        if let Some(events) = parsed.get("events_requested") {
+            stream["events_requested"] = events.clone();
+            stream["events_delivered"] = events.clone();
+        }
+        // An answer without delivery: the receiver keeps the one it listed.
+        let mut answer = stream.clone();
+        answer.as_object_mut().unwrap().remove("delivery");
+        return http(200, &answer.to_string());
+    }
     if path == "/ssf/stream" && method == "POST" {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
         tx.created += 1;
@@ -131,6 +160,10 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
         return http_empty(204);
     }
     if path.starts_with("/ssf/poll/") {
+        tx.polls += 1;
+        if tx.poll_status != 0 {
+            return http(tx.poll_status, &json!({"error": "temporarily_unavailable"}).to_string());
+        }
         let parsed: Value = serde_json::from_str(if body.is_empty() { "{}" } else { body }).unwrap_or(json!({}));
         if let Some(ack) = parsed.get("ack").and_then(|v| v.as_array()) {
             for jti in ack {
@@ -152,7 +185,7 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
     http(404, &json!({"error": "not_found"}).to_string())
 }
 
-fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &RsaPrivateKey, aud: Option<&str>, iss: Option<&str>) -> String {
+pub(super) fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &RsaPrivateKey, aud: Option<&str>, iss: Option<&str>) -> String {
     let mut tx = state.lock().unwrap();
     let jti = format!("jti-{}", tx.queue.len() + tx.acked.len() + 1);
     let base = tx.base.clone();
@@ -179,7 +212,7 @@ fn deliver(state: &Mutex<Tx>, kind: &str, sub_id: Value, extra: Value, key: &Rsa
     jti
 }
 
-fn http(status: u16, body: &str) -> String {
+pub(super) fn http(status: u16, body: &str) -> String {
     format!("HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len())
 }
 
@@ -187,7 +220,7 @@ fn http_empty(status: u16) -> String {
     format!("HTTP/1.1 {status} No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
 }
 
-fn read_http(stream: &mut impl Read) -> Result<(String, String, HashMap<String, String>, String), String> {
+pub(super) fn read_http(stream: &mut impl Read) -> Result<(String, String, HashMap<String, String>, String), String> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {

@@ -7,6 +7,8 @@ mod config;
 mod error;
 mod http;
 mod keys;
+#[cfg(feature = "pep")]
+pub mod pep;
 mod proof;
 mod ssf;
 mod subject;
@@ -18,7 +20,7 @@ pub use error::{Continuation, Error};
 pub use http::{Answer, TlsOpt};
 pub use keys::{fingerprint, load_client_key, public_key_object, ClientKey};
 pub use proof::interaction_hash;
-pub use ssf::{subject_of, verify_compact, EndFn, Events, HeaderFn, ReceiverOpt, SignalEvent, SignalsReceiver, TrackedSession, VerifiedJws};
+pub use ssf::{subject_of, verify_compact, EndFn, ErrorFn, Events, HeaderFn, ReceiverOpt, SignalEvent, SignalsReceiver, TrackedSession, VerifiedJws};
 pub use subject::{person_from, IdCheck, Person};
 
 #[cfg(test)]

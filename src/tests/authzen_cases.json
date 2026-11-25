@@ -1,0 +1,1940 @@
+{
+ "about": [
+  "gnap-caep-risc's own AuthZEN cases for the embedded Remote PEP (#39).",
+  "src/tests/authzen.rs runs every case through Client::decide or Client::decide_grant:",
+  "offline in local mode against a stub realm serving these policies and this catalogue,",
+  "and live (scripts/live_iya_sts.py --authzen) through a central and a local PEP each,",
+  "requiring central == local == expect. Policies are given to iya-sts as ALFA; xacml is",
+  "what iya-sts stored for that ALFA (the live run refuses a table whose xacml differs),",
+  "and is what the offline stub serves."
+ ],
+ "supportedObligations": [
+  "step-up"
+ ],
+ "obligationsProfile": true,
+ "catalogue": [
+  {
+   "object": "subject",
+   "property": "acr",
+   "attributeId": "urn:gnap-demo:subject:acr"
+  },
+  {
+   "object": "subject",
+   "property": "amr",
+   "attributeId": "urn:gnap-demo:subject:amr",
+   "multiplicity": "bag"
+  },
+  {
+   "object": "subject",
+   "property": "auth_time",
+   "attributeId": "urn:gnap-demo:subject:auth-time",
+   "dataType": "integer"
+  },
+  {
+   "object": "subject",
+   "property": "address.country",
+   "attributeId": "urn:gnap-demo:subject:country",
+   "category": "access-subject"
+  },
+  {
+   "object": "resource",
+   "property": "amount",
+   "attributeId": "urn:gnap-demo:order:amount",
+   "dataType": "double"
+  },
+  {
+   "object": "resource",
+   "property": "archived",
+   "attributeId": "urn:gnap-demo:order:archived",
+   "dataType": "boolean"
+  },
+  {
+   "object": "resource",
+   "property": "created",
+   "attributeId": "urn:gnap-demo:order:created",
+   "dataType": "dateTime"
+  },
+  {
+   "object": "resource",
+   "property": "tags",
+   "attributeId": "urn:gnap-demo:order:tags",
+   "multiplicity": "bag"
+  },
+  {
+   "object": "resource",
+   "property": "owner.region",
+   "attributeId": "urn:gnap-demo:order:owner-region"
+  },
+  {
+   "object": "resource",
+   "property": "quantity",
+   "attributeId": "urn:gnap-demo:order:quantity",
+   "category": "urn:oasis:names:tc:xacml:3.0:attribute-category:resource",
+   "dataType": "http://www.w3.org/2001/XMLSchema#integer",
+   "multiplicity": "single"
+  },
+  {
+   "object": "action",
+   "property": "reason",
+   "attributeId": "urn:gnap-demo:action:reason",
+   "category": "action"
+  },
+  {
+   "object": "context",
+   "property": "channel",
+   "attributeId": "urn:gnap-demo:env:channel"
+  },
+  {
+   "object": "context",
+   "property": "device.trusted",
+   "attributeId": "urn:gnap-demo:env:device-trusted",
+   "category": "environment",
+   "dataType": "boolean"
+  },
+  {
+   "object": "context",
+   "property": "tenant",
+   "attributeId": "urn:gnap-demo:env:tenant",
+   "category": "resource"
+  }
+ ],
+ "directory": {
+  "authzen-alice": {
+   "employeeType": "staff"
+  },
+  "authzen-bob": {
+   "employeeType": "contractor"
+  }
+ },
+ "peps": {
+  "main": {
+   "application": "gnap-caep-risc-demo",
+   "about": "the GNAP client's own application, decided by the realm root",
+   "policies": [
+    {
+     "name": "gnap-authzen-root",
+     "root": true,
+     "alfa": [
+      "namespace gnapAuthzen {",
+      "    attribute act { category = actionCat id = \"urn:oasis:names:tc:xacml:1.0:action:action-id\" type = string }",
+      "    attribute rtype { category = resourceCat id = \"urn:sts:xacml:authzen:resource-type\" type = string }",
+      "    attribute protocol { category = environmentCat id = \"urn:sts:xacml:protocol\" type = string }",
+      "    attribute app { category = environmentCat id = \"urn:sts:xacml:authzen:application\" type = string }",
+      "    attribute acr { category = subjectCat id = \"urn:gnap-demo:subject:acr\" type = string }",
+      "    attribute amr { category = subjectCat id = \"urn:gnap-demo:subject:amr\" type = string }",
+      "    attribute authTime { category = subjectCat id = \"urn:gnap-demo:subject:auth-time\" type = integer }",
+      "    attribute country { category = subjectCat id = \"urn:gnap-demo:subject:country\" type = string }",
+      "    attribute staff { category = subjectCat id = \"employeeType\" type = string }",
+      "    attribute amount { category = resourceCat id = \"urn:gnap-demo:order:amount\" type = double }",
+      "    attribute archived { category = resourceCat id = \"urn:gnap-demo:order:archived\" type = boolean }",
+      "    attribute created { category = resourceCat id = \"urn:gnap-demo:order:created\" type = dateTime }",
+      "    attribute tags { category = resourceCat id = \"urn:gnap-demo:order:tags\" type = string }",
+      "    attribute region { category = resourceCat id = \"urn:gnap-demo:order:owner-region\" type = string }",
+      "    attribute quantity { category = resourceCat id = \"urn:gnap-demo:order:quantity\" type = integer }",
+      "    attribute tenant { category = resourceCat id = \"urn:gnap-demo:env:tenant\" type = string }",
+      "    attribute reason { category = actionCat id = \"urn:gnap-demo:action:reason\" type = string }",
+      "    attribute channel { category = environmentCat id = \"urn:gnap-demo:env:channel\" type = string }",
+      "    attribute deviceTrusted { category = environmentCat id = \"urn:gnap-demo:env:device-trusted\" type = boolean }",
+      "",
+      "    policyset gnapAuthzenRoot {",
+      "        id = \"urn:gnap-demo:policy:authzen-root\"",
+      "        apply firstApplicable",
+      "        target clause protocol == \"authzen\"",
+      "        policy orders {",
+      "            id = \"urn:gnap-demo:policy:orders\"",
+      "            apply firstApplicable",
+      "            target clause rtype == \"order\"",
+      "            rule noDelete { deny target clause act == \"delete\" }",
+      "            rule readAtLoa2 { permit target clause act == \"read\" target clause acr == \"urn:gnap-demo:loa:2\" }",
+      "            rule strictRead { permit target clause act == \"strict-read\" target clause acr[mustbepresent] == \"urn:gnap-demo:loa:2\" }",
+      "            rule refundWithOtp { permit target clause act == \"refund\" target clause amr == \"otp\" }",
+      "            rule recentSignIn { permit target clause act == \"approve-recent\" condition integerGreaterThanOrEqual(integerOneAndOnly(authTime), 1700000000) }",
+      "            rule singleMethod { permit target clause act == \"single-method\" condition stringEqual(stringOneAndOnly(amr), \"pwd\") }",
+      "            rule payTooMuch { deny target clause act == \"pay\" target clause amount > 1000.0 }",
+      "            rule pay { permit target clause act == \"pay\" target clause amount <= 1000.0 }",
+      "            rule updateArchived { deny target clause act == \"update\" target clause archived == true }",
+      "            rule update { permit target clause act == \"update\" target clause archived == false }",
+      "            rule exportThisYear { permit target clause act == \"export\" target clause created >= dateTime(\"2026-01-01T00:00:00Z\") }",
+      "            rule readTagged { permit target clause act == \"tag-read\" target clause tags == \"public\" }",
+      "            rule shipInEu { permit target clause act == \"ship\" target clause region == \"eu\" }",
+      "            rule bulkUpTo100 { permit target clause act == \"bulk\" target clause quantity <= 100 }",
+      "            rule cancelOnRequest { permit target clause act == \"cancel\" target clause reason == \"customer-request\" }",
+      "            rule checkoutOnTrustedWeb { permit target clause act == \"checkout\" target clause channel == \"web\" target clause deviceTrusted == true }",
+      "            rule auditOwnTenant { permit target clause act == \"audit\" target clause tenant == \"acme\" target clause app == \"gnap-caep-risc-demo\" }",
+      "            rule taxInNz { permit target clause act == \"tax-view\" target clause country == \"NZ\" }",
+      "            rule approveWithStepUp {",
+      "                permit",
+      "                target clause act == \"approve\"",
+      "                on permit { obligation \"urn:sts:xacml:authzen:obligation:step-up\" { \"acr_value\" = \"urn:gnap-demo:loa:3\" } }",
+      "            }",
+      "            rule notifyOps {",
+      "                permit",
+      "                target clause act == \"notify\"",
+      "                on permit { obligation \"urn:sts:xacml:authzen:obligation:notification\" { \"to\" = \"ops@gnap-demo.test\" \"body\" = \"an order was opened\" } }",
+      "            }",
+      "            rule readLogged {",
+      "                permit",
+      "                target clause act == \"log-read\"",
+      "                on permit { obligation \"urn:sts:xacml:obligation:log\" { \"message\" = \"order read\" } }",
+      "            }",
+      "            rule watermarked {",
+      "                permit",
+      "                target clause act == \"custom\"",
+      "                on permit { obligation \"urn:gnap-demo:obligation:watermark\" { \"text\" = \"confidential\" } }",
+      "            }",
+      "            rule browseWithBanner {",
+      "                permit",
+      "                target clause act == \"browse\"",
+      "                on permit { advice \"urn:gnap-demo:advice:banner\" { \"text\" = \"prices may change\" } }",
+      "            }",
+      "        }",
+      "        policy payslips {",
+      "            id = \"urn:gnap-demo:policy:payslips\"",
+      "            apply firstApplicable",
+      "            target clause rtype == \"payslip\"",
+      "            rule staffRead { permit target clause act == \"read\" target clause staff == \"staff\" }",
+      "            rule otherwise { deny }",
+      "        }",
+      "    }",
+      "}"
+     ],
+     "xacml": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<PolicySet xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" PolicySetId=\"urn:gnap-demo:policy:authzen-root\" Version=\"1.0\" PolicyCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:policy-combining-algorithm:first-applicable\">",
+      "  <Target>",
+      "    <AnyOf>",
+      "      <AllOf>",
+      "        <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "          <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">authzen</AttributeValue>",
+      "          <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:sts:xacml:protocol\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "        </Match>",
+      "      </AllOf>",
+      "    </AnyOf>",
+      "  </Target>",
+      "  <Policy PolicyId=\"urn:gnap-demo:policy:orders\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:rule-combining-algorithm:first-applicable\">",
+      "    <Target>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">order</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:sts:xacml:authzen:resource-type\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "    </Target>",
+      "    <Rule RuleId=\"noDelete\" Effect=\"Deny\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">delete</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"readAtLoa2\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">read</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">urn:gnap-demo:loa:2</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:acr\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"strictRead\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">strict-read</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">urn:gnap-demo:loa:2</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:acr\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"true\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"refundWithOtp\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">refund</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">otp</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:amr\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"recentSignIn\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">approve-recent</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <Condition>",
+      "        <Apply FunctionId=\"urn:oasis:names:tc:xacml:1.0:function:integer-greater-than-or-equal\">",
+      "          <Apply FunctionId=\"urn:oasis:names:tc:xacml:1.0:function:integer-one-and-only\">",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:auth-time\" DataType=\"http://www.w3.org/2001/XMLSchema#integer\" MustBePresent=\"false\"/>",
+      "          </Apply>",
+      "          <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#integer\">1700000000</AttributeValue>",
+      "        </Apply>",
+      "      </Condition>",
+      "    </Rule>",
+      "    <Rule RuleId=\"singleMethod\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">single-method</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <Condition>",
+      "        <Apply FunctionId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "          <Apply FunctionId=\"urn:oasis:names:tc:xacml:1.0:function:string-one-and-only\">",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:amr\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Apply>",
+      "          <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">pwd</AttributeValue>",
+      "        </Apply>",
+      "      </Condition>",
+      "    </Rule>",
+      "    <Rule RuleId=\"payTooMuch\" Effect=\"Deny\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">pay</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:double-less-than\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#double\">1000.0</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:amount\" DataType=\"http://www.w3.org/2001/XMLSchema#double\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"pay\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">pay</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:double-greater-than-or-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#double\">1000.0</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:amount\" DataType=\"http://www.w3.org/2001/XMLSchema#double\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"updateArchived\" Effect=\"Deny\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">update</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:boolean-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#boolean\">true</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:archived\" DataType=\"http://www.w3.org/2001/XMLSchema#boolean\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"update\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">update</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:boolean-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#boolean\">false</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:archived\" DataType=\"http://www.w3.org/2001/XMLSchema#boolean\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"exportThisYear\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">export</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:dateTime-less-than-or-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#dateTime\">2026-01-01T00:00:00Z</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:created\" DataType=\"http://www.w3.org/2001/XMLSchema#dateTime\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"readTagged\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">tag-read</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">public</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:tags\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"shipInEu\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">ship</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">eu</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:owner-region\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"bulkUpTo100\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">bulk</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:integer-greater-than-or-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#integer\">100</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:order:quantity\" DataType=\"http://www.w3.org/2001/XMLSchema#integer\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"cancelOnRequest\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">cancel</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">customer-request</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:gnap-demo:action:reason\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"checkoutOnTrustedWeb\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">checkout</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">web</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:gnap-demo:env:channel\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:boolean-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#boolean\">true</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:gnap-demo:env:device-trusted\" DataType=\"http://www.w3.org/2001/XMLSchema#boolean\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"auditOwnTenant\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">audit</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">acme</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:gnap-demo:env:tenant\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">gnap-caep-risc-demo</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:sts:xacml:authzen:application\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"taxInNz\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">tax-view</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">NZ</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"urn:gnap-demo:subject:country\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"approveWithStepUp\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">approve</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <ObligationExpressions>",
+      "        <ObligationExpression ObligationId=\"urn:sts:xacml:authzen:obligation:step-up\" FulfillOn=\"Permit\">",
+      "          <AttributeAssignmentExpression AttributeId=\"acr_value\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">urn:gnap-demo:loa:3</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "        </ObligationExpression>",
+      "      </ObligationExpressions>",
+      "    </Rule>",
+      "    <Rule RuleId=\"notifyOps\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">notify</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <ObligationExpressions>",
+      "        <ObligationExpression ObligationId=\"urn:sts:xacml:authzen:obligation:notification\" FulfillOn=\"Permit\">",
+      "          <AttributeAssignmentExpression AttributeId=\"to\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">ops@gnap-demo.test</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "          <AttributeAssignmentExpression AttributeId=\"body\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">an order was opened</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "        </ObligationExpression>",
+      "      </ObligationExpressions>",
+      "    </Rule>",
+      "    <Rule RuleId=\"readLogged\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">log-read</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <ObligationExpressions>",
+      "        <ObligationExpression ObligationId=\"urn:sts:xacml:obligation:log\" FulfillOn=\"Permit\">",
+      "          <AttributeAssignmentExpression AttributeId=\"message\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">order read</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "        </ObligationExpression>",
+      "      </ObligationExpressions>",
+      "    </Rule>",
+      "    <Rule RuleId=\"watermarked\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">custom</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <ObligationExpressions>",
+      "        <ObligationExpression ObligationId=\"urn:gnap-demo:obligation:watermark\" FulfillOn=\"Permit\">",
+      "          <AttributeAssignmentExpression AttributeId=\"text\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">confidential</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "        </ObligationExpression>",
+      "      </ObligationExpressions>",
+      "    </Rule>",
+      "    <Rule RuleId=\"browseWithBanner\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">browse</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "      <AdviceExpressions>",
+      "        <AdviceExpression AdviceId=\"urn:gnap-demo:advice:banner\" AppliesTo=\"Permit\">",
+      "          <AttributeAssignmentExpression AttributeId=\"text\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">prices may change</AttributeValue>",
+      "          </AttributeAssignmentExpression>",
+      "        </AdviceExpression>",
+      "      </AdviceExpressions>",
+      "    </Rule>",
+      "  </Policy>",
+      "  <Policy PolicyId=\"urn:gnap-demo:policy:payslips\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:rule-combining-algorithm:first-applicable\">",
+      "    <Target>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">payslip</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:sts:xacml:authzen:resource-type\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "    </Target>",
+      "    <Rule RuleId=\"staffRead\" Effect=\"Permit\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">read</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">staff</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:1.0:subject-category:access-subject\" AttributeId=\"employeeType\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "    <Rule RuleId=\"otherwise\" Effect=\"Deny\">",
+      "      <Target/>",
+      "    </Rule>",
+      "  </Policy>",
+      "</PolicySet>"
+     ]
+    }
+   ]
+  },
+  "fga-ref": {
+   "application": "gnap-authzen-fga-ref",
+   "fga": true,
+   "about": "an application that enforces fine-grained authorization; its own policy references another (iya-sts #2027)",
+   "policies": [
+    {
+     "name": "gnap-authzen-fga-helper",
+     "alfa": [
+      "namespace gnapFgaHelper {",
+      "    attribute act { category = actionCat id = \"urn:oasis:names:tc:xacml:1.0:action:action-id\" type = string }",
+      "    attribute rtype { category = resourceCat id = \"urn:sts:xacml:authzen:resource-type\" type = string }",
+      "    policy fgaHelper {",
+      "        id = \"urn:gnap-demo:policy:fga-helper\"",
+      "        apply firstApplicable",
+      "        rule readDocuments { permit target clause act == \"read\" target clause rtype == \"doc\" }",
+      "    }",
+      "}"
+     ],
+     "xacml": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<Policy xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" PolicyId=\"urn:gnap-demo:policy:fga-helper\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:rule-combining-algorithm:first-applicable\">",
+      "  <Target/>",
+      "  <Rule RuleId=\"readDocuments\" Effect=\"Permit\">",
+      "    <Target>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">read</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">doc</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:resource\" AttributeId=\"urn:sts:xacml:authzen:resource-type\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "    </Target>",
+      "  </Rule>",
+      "</Policy>"
+     ]
+    },
+    {
+     "own": true,
+     "root": true,
+     "references": [
+      "urn:gnap-demo:policy:fga-helper"
+     ],
+     "alfa": [
+      "namespace gnapFgaRef {",
+      "    attribute act { category = actionCat id = \"urn:oasis:names:tc:xacml:1.0:action:action-id\" type = string }",
+      "    attribute protocol { category = environmentCat id = \"urn:sts:xacml:protocol\" type = string }",
+      "    policyset fgaRef {",
+      "        id = \"urn:gnap-demo:policy:fga-ref\"",
+      "        apply firstApplicable",
+      "        target clause protocol == \"authzen\"",
+      "        policy noPurge {",
+      "            id = \"urn:gnap-demo:policy:fga-ref-no-purge\"",
+      "            apply firstApplicable",
+      "            rule purge { deny target clause act == \"purge\" }",
+      "        }",
+      "    }",
+      "}"
+     ],
+     "xacml": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<PolicySet xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" PolicySetId=\"urn:gnap-demo:policy:fga-ref\" Version=\"1.0\" PolicyCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:policy-combining-algorithm:first-applicable\">",
+      "  <Target>",
+      "    <AnyOf>",
+      "      <AllOf>",
+      "        <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "          <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">authzen</AttributeValue>",
+      "          <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:sts:xacml:protocol\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "        </Match>",
+      "      </AllOf>",
+      "    </AnyOf>",
+      "  </Target>",
+      "  <Policy PolicyId=\"urn:gnap-demo:policy:fga-ref-no-purge\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:rule-combining-algorithm:first-applicable\">",
+      "    <Target/>",
+      "    <Rule RuleId=\"purge\" Effect=\"Deny\">",
+      "      <Target>",
+      "        <AnyOf>",
+      "          <AllOf>",
+      "            <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "              <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">purge</AttributeValue>",
+      "              <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "            </Match>",
+      "          </AllOf>",
+      "        </AnyOf>",
+      "      </Target>",
+      "    </Rule>",
+      "  </Policy>",
+      "  <PolicyIdReference>urn:gnap-demo:policy:fga-helper</PolicyIdReference>",
+      "</PolicySet>"
+     ]
+    }
+   ]
+  },
+  "fga-stage": {
+   "application": "gnap-authzen-fga-stage",
+   "fga": true,
+   "about": "an application that enforces fine-grained authorization, whose policy reads urn:sts:xacml:fga:stage",
+   "policies": [
+    {
+     "own": true,
+     "root": true,
+     "alfa": [
+      "namespace gnapFgaStage {",
+      "    attribute act { category = actionCat id = \"urn:oasis:names:tc:xacml:1.0:action:action-id\" type = string }",
+      "    attribute stage { category = environmentCat id = \"urn:sts:xacml:fga:stage\" type = string }",
+      "    policy fgaStage {",
+      "        id = \"urn:gnap-demo:policy:fga-stage\"",
+      "        apply firstApplicable",
+      "        rule noPurgeAtAccess { deny target clause stage == \"access\" target clause act == \"purge\" }",
+      "        rule everythingElse { permit }",
+      "    }",
+      "}"
+     ],
+     "xacml": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<Policy xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" PolicyId=\"urn:gnap-demo:policy:fga-stage\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:1.0:rule-combining-algorithm:first-applicable\">",
+      "  <Target/>",
+      "  <Rule RuleId=\"noPurgeAtAccess\" Effect=\"Deny\">",
+      "    <Target>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">access</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:environment\" AttributeId=\"urn:sts:xacml:fga:stage\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "      <AnyOf>",
+      "        <AllOf>",
+      "          <Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\">",
+      "            <AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">purge</AttributeValue>",
+      "            <AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/>",
+      "          </Match>",
+      "        </AllOf>",
+      "      </AnyOf>",
+      "    </Target>",
+      "  </Rule>",
+      "  <Rule RuleId=\"everythingElse\" Effect=\"Permit\">",
+      "    <Target/>",
+      "  </Rule>",
+      "</Policy>"
+     ]
+    }
+   ]
+  }
+ },
+ "people": {
+  "alice": {
+   "uid": "authzen-alice",
+   "preferred_username": "alice",
+   "sub": "8f1c-alice-pairwise",
+   "claims": {
+    "iss": "https://sts.example",
+    "sub": "8f1c-alice-pairwise",
+    "aud": "gnap-caep-risc-demo",
+    "iat": 1790000000,
+    "exp": 1790003600,
+    "acr": "urn:gnap-demo:loa:2",
+    "amr": [
+     "pwd",
+     "otp"
+    ],
+    "auth_time": 1790000000,
+    "address": {
+     "country": "NZ"
+    }
+   }
+  },
+  "bob": {
+   "uid": "authzen-bob",
+   "preferred_username": "bob",
+   "sub": "41d0-bob-pairwise",
+   "claims": {
+    "iss": "https://sts.example",
+    "sub": "41d0-bob-pairwise",
+    "aud": "gnap-caep-risc-demo",
+    "acr": "urn:gnap-demo:loa:1",
+    "amr": [
+     "pwd"
+    ],
+    "auth_time": 1790000000
+   }
+  }
+ },
+ "cases": [
+  {
+   "id": "permit",
+   "about": "read at loa 2: the acr claim reaches the policy through its catalogue row",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "deny",
+   "about": "an explicit Deny rule",
+   "person": "alice",
+   "access": {
+    "action": "delete",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "not-applicable",
+   "about": "no policy targets an invoice: NotApplicable, which the host sees as a Deny",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "invoice",
+     "id": "7"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "missing-claim",
+   "about": "no acr claim: the rule's target cannot match",
+   "person": "alice",
+   "dropClaims": [
+    "acr"
+   ],
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "undeclared-claims-dropped",
+   "about": "claims the catalogue does not declare are dropped before asking, not refused",
+   "person": "alice",
+   "claims": {
+    "email": "alice@gnap-demo.test",
+    "groups": [
+     "buyers"
+    ],
+    "nickname": "al"
+   },
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "claim-wrong-type",
+   "about": "auth_time as text that is not an integer: refused, so a Deny",
+   "person": "alice",
+   "claims": {
+    "auth_time": "soon"
+   },
+   "access": {
+    "action": "approve-recent",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "claim-integer",
+   "about": "auth_time, an integer row, compared in a condition",
+   "person": "alice",
+   "access": {
+    "action": "approve-recent",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "claim-integer-too-old",
+   "about": "auth_time before the policy's bound",
+   "person": "alice",
+   "claims": {
+    "auth_time": 1600000000
+   },
+   "access": {
+    "action": "approve-recent",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "claim-missing-one-and-only",
+   "about": "no auth_time: integer-one-and-only of an empty bag is Indeterminate for a missing attribute, an ordinary Deny",
+   "person": "alice",
+   "dropClaims": [
+    "auth_time"
+   ],
+   "access": {
+    "action": "approve-recent",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "one-and-only-of-two",
+   "about": "amr holds two methods: string-one-and-only of a bag of two is a processing error, never a Deny",
+   "person": "alice",
+   "access": {
+    "action": "single-method",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Unavailable"
+   }
+  },
+  {
+   "id": "one-and-only-of-one",
+   "about": "bob's amr holds one method",
+   "person": "bob",
+   "access": {
+    "action": "single-method",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "must-be-present-missing",
+   "about": "no acr where the policy says MustBePresent: Indeterminate for a missing attribute, an ordinary Deny",
+   "person": "alice",
+   "dropClaims": [
+    "acr"
+   ],
+   "access": {
+    "action": "strict-read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "must-be-present",
+   "about": "the same with acr",
+   "person": "alice",
+   "access": {
+    "action": "strict-read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "claim-bag",
+   "about": "amr, a bag row, holds otp",
+   "person": "alice",
+   "access": {
+    "action": "refund",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "claim-bag-without",
+   "about": "amr without otp",
+   "person": "bob",
+   "access": {
+    "action": "refund",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "claim-dotted-path",
+   "about": "address.country, a dotted subject row",
+   "person": "alice",
+   "access": {
+    "action": "tax-view",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "claim-dotted-path-undeclared-sibling",
+   "about": "address.street has no row while address.country does: refused",
+   "person": "alice",
+   "claims": {
+    "address": {
+     "country": "NZ",
+     "street": "1 Queen St"
+    }
+   },
+   "access": {
+    "action": "tax-view",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "double",
+   "about": "amount, a double row, under the bound",
+   "person": "alice",
+   "access": {
+    "action": "pay",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "amount": 250.5
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "double-over",
+   "about": "amount over the bound: Deny",
+   "person": "alice",
+   "access": {
+    "action": "pay",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "amount": 5000
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "double-wrong-type",
+   "about": "amount as text that is not a double: refused",
+   "person": "alice",
+   "access": {
+    "action": "pay",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "amount": "lots"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "null-property",
+   "about": "a null is neither absent nor empty: refused",
+   "person": "alice",
+   "access": {
+    "action": "pay",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "amount": null
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "integer-from-text",
+   "about": "a string parses at the integer row",
+   "person": "alice",
+   "access": {
+    "action": "bulk",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "quantity": "42"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "integer-fraction",
+   "about": "2.5 does not reach an integer row: refused",
+   "person": "alice",
+   "access": {
+    "action": "bulk",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "quantity": 2.5
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "integer-over",
+   "about": "quantity over the bound",
+   "person": "alice",
+   "access": {
+    "action": "bulk",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "quantity": 500
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "boolean-false",
+   "about": "archived false, a boolean row",
+   "person": "alice",
+   "access": {
+    "action": "update",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "archived": false
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "boolean-true",
+   "about": "archived true: Deny",
+   "person": "alice",
+   "access": {
+    "action": "update",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "archived": true
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "boolean-wrong-type",
+   "about": "yes is not a boolean: refused",
+   "person": "alice",
+   "access": {
+    "action": "update",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "archived": "yes"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "datetime",
+   "about": "created this year, a dateTime row",
+   "person": "alice",
+   "access": {
+    "action": "export",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "created": "2026-03-01T12:00:00Z"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "datetime-before",
+   "about": "created last year",
+   "person": "alice",
+   "access": {
+    "action": "export",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "created": "2025-12-31T23:59:59Z"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "datetime-wrong-type",
+   "about": "yesterday is not a dateTime: refused",
+   "person": "alice",
+   "access": {
+    "action": "export",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "created": "yesterday"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "bag",
+   "about": "tags, a bag row, holds public",
+   "person": "alice",
+   "access": {
+    "action": "tag-read",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "tags": [
+       "internal",
+       "public"
+      ]
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "bag-one-scalar",
+   "about": "one value for a bag row is a bag of one",
+   "person": "alice",
+   "access": {
+    "action": "tag-read",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "tags": "public"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "bag-empty",
+   "about": "an empty bag is supplied and holds nothing",
+   "person": "alice",
+   "access": {
+    "action": "tag-read",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "tags": []
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "nested-path",
+   "about": "owner.region, a dotted resource row",
+   "person": "alice",
+   "access": {
+    "action": "ship",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "owner": {
+       "region": "eu"
+      }
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "nested-path-undeclared-member",
+   "about": "owner.name has no row: refused",
+   "person": "alice",
+   "access": {
+    "action": "ship",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "owner": {
+       "region": "eu",
+       "name": "Acme"
+      }
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "undeclared-resource-property",
+   "about": "color is not in the catalogue: refused in every mode",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42",
+     "properties": {
+      "color": "red"
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "action-property",
+   "about": "reason, an action row with the short category name",
+   "person": "alice",
+   "access": {
+    "action": "cancel",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "actionProperties": {
+     "reason": "customer-request"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "context-members",
+   "about": "channel and device.trusted, context rows",
+   "person": "alice",
+   "access": {
+    "action": "checkout",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "channel": "web",
+     "device": {
+      "trusted": true
+     }
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "context-untrusted-device",
+   "about": "device.trusted false",
+   "person": "alice",
+   "access": {
+    "action": "checkout",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "channel": "web",
+     "device": {
+      "trusted": false
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "context-array-to-single",
+   "about": "an array for a single row: refused",
+   "person": "alice",
+   "access": {
+    "action": "checkout",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "channel": [
+      "web"
+     ],
+     "device": {
+      "trusted": true
+     }
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "context-undeclared",
+   "about": "context.ip has no row: refused",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "ip": "10.0.0.1"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "context-into-resource-category",
+   "about": "context.tenant, mapped into the resource category, beside the trusted application fact",
+   "person": "alice",
+   "access": {
+    "action": "audit",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "tenant": "acme"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "context-application-other",
+   "about": "context.application naming another application is replaced by the PEP's own",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    },
+    "context": {
+     "application": "someone-else"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "directory-attribute",
+   "about": "employeeType from the directory through iya-sts's PIP",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "payslip",
+     "id": "9"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "directory-attribute-other",
+   "about": "a contractor's employeeType",
+   "person": "bob",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "payslip",
+     "id": "9"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "obligation-declared",
+   "about": "a step-up obligation, handed because the PEP declares step-up",
+   "person": "alice",
+   "access": {
+    "action": "approve",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit",
+    "obligations": [
+     {
+      "type": "step-up",
+      "properties": {
+       "acr_value": "urn:gnap-demo:loa:3"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "obligation-undeclared",
+   "about": "a notification obligation the PEP did not declare: Deny",
+   "person": "alice",
+   "access": {
+    "action": "notify",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "obligation-log",
+   "about": "the log obligation is discharged by the PDP side, not handed",
+   "person": "alice",
+   "access": {
+    "action": "log-read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "obligation-custom",
+   "about": "a custom obligation the PEP did not declare: Deny",
+   "person": "alice",
+   "access": {
+    "action": "custom",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "advice",
+   "about": "advice rides on a Permit",
+   "person": "alice",
+   "access": {
+    "action": "browse",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit",
+    "advice": [
+     "urn:gnap-demo:advice:banner"
+    ]
+   }
+  },
+  {
+   "id": "grant-live",
+   "about": "decide_grant on a live grant asks as decide does",
+   "person": "alice",
+   "grant": "live",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "grant-no-subject",
+   "about": "a grant naming no subject: Deny without asking",
+   "person": "alice",
+   "grant": "no-subject",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "grant-expired",
+   "about": "a grant whose access token expired: Deny without asking",
+   "person": "alice",
+   "grant": "expired",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "grant-revoked",
+   "about": "a grant this client revoked: Deny without asking",
+   "person": "alice",
+   "grant": "revoked",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "order",
+     "id": "42"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "fga-reference",
+   "about": "the application's own policy reaches the read rule through a PolicyIdReference",
+   "pep": "fga-ref",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "doc",
+     "id": "d1"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  },
+  {
+   "id": "fga-own-rule",
+   "about": "the application's own policy denies purge itself",
+   "pep": "fga-ref",
+   "person": "alice",
+   "access": {
+    "action": "purge",
+    "resource": {
+     "type": "doc",
+     "id": "d1"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "fga-stage",
+   "about": "the application's policy denies purge at stage access (urn:sts:xacml:fga:stage)",
+   "pep": "fga-stage",
+   "person": "alice",
+   "access": {
+    "action": "purge",
+    "resource": {
+     "type": "doc",
+     "id": "d1"
+    }
+   },
+   "expect": {
+    "decision": "Deny"
+   }
+  },
+  {
+   "id": "fga-stage-other-action",
+   "about": "and permits the rest",
+   "pep": "fga-stage",
+   "person": "alice",
+   "access": {
+    "action": "read",
+    "resource": {
+     "type": "doc",
+     "id": "d1"
+    }
+   },
+   "expect": {
+    "decision": "Permit"
+   }
+  }
+ ]
+}

@@ -1,6 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Iya CyberSecurity Solutions, LLC
 // SPDX-License-Identifier: MIT
-//
 // The signed-in page's one script. It shows the Shared Signals events about THIS session, live:
 //
 //   - an EventSource on /events receives each event as JSON the moment the server's receiver has it,
@@ -11,11 +10,14 @@
 //   - `signed-out` (or a 401 from the API) means the session is already gone on the server: say why and
 //     go back to the sign-in page.
 //
-// The page is ONE account's (its URL is /u/<account>/, in data-base): the event stream, the API and every
-// link here are that account's, and the server only ever sends them events about that account's session
-// or person, so nothing here filters. Another account in the same browser has its own tabs and streams.
+// The page is this browser's one sign-in. The log is the application's: its one Shared Signals stream
+// carries every user's events, so the events tab says so (a real application shows a person only their own).
+// In this demo /events answers 204, so the EventSource gives up and the page polls /api/signals.
 // Everything an event carries is identity provider data and is drawn with textContent, never as HTML.
-
+// Its own scope: every page script shares one global scope, and two
+// top-level declarations of one name (app.js and pep.js both had `panel`)
+// make the second script fail to load at all.
+(() => {
 const panel = document.getElementById('panel');
 const log = document.getElementById('log');
 const logEmpty = document.getElementById('log-empty');
@@ -150,3 +152,4 @@ document.getElementById('verify-form')?.addEventListener('submit', async (ev) =>
 });
 
 listen();
+})();

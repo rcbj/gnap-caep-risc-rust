@@ -5,14 +5,15 @@ FROM rust:1-bookworm AS test
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN cargo test
+# The default build (a pep section refused), then every feature (the embedded PEP, local mode).
+RUN cargo test && cargo test --all-features
 
 FROM rust:1-bookworm AS build
 WORKDIR /src
 # Only what the binary is compiled from, so a new trust chain in demo/ does not rebuild it.
 COPY Cargo.toml Cargo.lock ./
 COPY src src
-RUN cargo build --release --bin demo
+RUN cargo build --release --features local --bin demo
 
 # The setup tools: python3 for scripts/configure_iya_sts.py and openssl for the client key.
 # scripts/live_iya_sts.py generates the key and registers the demo in this image, as the invoking

@@ -10,7 +10,7 @@ The private key stays in this process. The same `gnap.json` shape as the Python 
 docker build --target test .
 ```
 
-The `test` stage runs `cargo test` in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
+The `test` stage runs `cargo test`, then `cargo test --all-features`, in `rust:1-bookworm`. GitHub Actions uses that command. Do not run Cargo on the host. The demo image does not run the suite.
 
 Crate name: `gnap-caep-risc`. A pull request merged into `main` publishes the crate to crates.io after the test workflow succeeds on that commit. A direct push does not. The token is the `CARGO_REGISTRY_TOKEN` repository secret. A release happens when the library's files changed since the last release's tag: `publish.yml` takes one patch above the highest published version, publishes it, and creates the matching tag and GitHub Release. A change to tests, the demo, or the docs releases nothing. To choose a version or start a new minor, raise `VERSION`; the version is stamped in CI and is not committed, so the manifests can trail what is published.
 
@@ -34,13 +34,48 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 
 `ssf.pollIntervalMs` is the poll interval in milliseconds. `SignalsReceiver::stop` waits until the background poll has finished.
 
+## Embedded PEP (features `pep` and `local`)
+
+Ask iya-sts's authorization policy whether a signed-in person may act on a resource, through the embedded Remote PEP (the shared [`iya-pep`](https://github.com/rcbj/iya-pep-rust) crate; iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)). **[docs/remote-pep.md](docs/remote-pep.md) is the full guide**: setting up iya-sts, choosing `central` or `local`, every configuration member, obligations, policy-change events, operating it and troubleshooting.
+
+```toml
+gnap-caep-risc = { version = "…", features = ["pep"] }    # central: AuthZEN at iya-sts
+gnap-caep-risc = { version = "…", features = ["local"] }  # local too: decided in process
+```
+
+```json
+"pep": { "name": "pep-orders", "mode": "local", "assertionKey": "pep-key.pem" }
+```
+
+```rust
+let decision = client.decide_grant(&grant, &Access::new("read", "order", "42"));
+let status = decision.http_status(); // 200 for a Permit, 403 for anything else
+match decision {
+    Decision::Permit { obligations, .. } => { /* discharge them, then serve */ }
+    Decision::Deny { .. } => { /* 403 */ }
+    Decision::Unavailable { .. } => { /* 403: fail closed, never a Permit */ }
+}
+```
+
+The section is off unless present, and a build without the feature refuses it. A section that names no `mode` is `local`, so a `pep`-only build must name `central`. The PEP's key must be its own, and only the claims the realm's AuthZEN catalogue declares are sent. Every PEP failure is a 403: `Unavailable` (no policy held, iya-sts unreachable, or a panic while deciding, which the PEP catches) is refused like a Deny, and in `central` mode a failed evaluation or heartbeat drops every cached Permit. The Shared Signals receiver tells the PEP how its stream is doing (`requested` or `excluded` while polls succeed, `down` after a failed poll or `stop()`), and the PEP polls its policies itself while it is `down`. The demo protects `GET /orders/<id>` and `GET /attribute-protected` with the PEP.
+
+`src/tests/authzen_cases.json` is this library's AuthZEN table for the PEP. The unit suite runs it in `local` mode against a stub; `python3 scripts/live_iya_sts.py --authzen` runs every case through a `central` and a `local` PEP on a fresh iya-sts and fails unless both give the table's answer. All 58 cases agree against iya-sts `feature/2028` with iya-pep `c0d61ca`; see [docs/remote-pep.md](docs/remote-pep.md#test-that-central-and-local-agree), including the `authzen.returnReasons` setting the run turns on.
+
 ## Demo
 
 ```bash
 docker compose up --build
 ```
 
-`PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant, `/callback` finishes it, and `POST /logout` signs out.
+`PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant and `/callback` finishes it.
+
+Signed in, the top bar links the demo's pages (Demo home and, with the PEP, Attribute-protected and Order 42) and carries a user menu: the person's name, **Sign in with another account** and **Sign out** (`POST /logout`, which revokes the grant; it is nowhere else on the page). The name is the username the grant returned (the `account` subject identifier's user part, else the ID token assertion's `username` or `preferred_username`), else the email, and the subject identifier only when nothing else names the person. GNAP has no prompt to make iya-sts ask again, so **Sign in with another account** (`POST /login/another`) ends the sign-in here and returns to the sign-in page; iya-sts asks who you are unless it still holds a sign-on session for you.
+
+The signed-in page has three tabs, each block on them a collapsible pane, with a **Collapse all** / **Expand all** toggle:
+
+- **Session** (`/`): the protections in effect (the key proof, the client key's thumbprint, the interaction's hash and nonces, token binding, the subject's assertion, TLS, the server-side token cache, Shared Signals); the subject the grant names and every claim of its verified ID token assertion; the token cache (expiry, automatic rotation when 60 s or less are left, rotations, the token management and continuation URIs held, the access rights) with **Rotate now** (`POST /session/rotate`); and the grant's credentials. A credential's value never reaches the page: each is shown by a SHA-256 fingerprint, and a JWT by its decoded header and claims.
+- **CAEP & RISC events** (`/?tab=events`): the stream's status, **Ask for a verification event** (`POST /signals/verify`) and the log, newest first, which `app.js` keeps current from `GET /api/signals?after=<id>`. The application has one stream, so this tab shows every user's events; it says so, and a real application must show a person only the events about their own session or account.
+- **Policy enforcement** (`/?tab=pep`): the embedded PEP (below).
 
 The shipped `demo/gnap.json` leaves `signals` on by omitting the key. Key material is `file:` or `env:` and is not in the tree. Register the application with:
 
@@ -51,6 +86,19 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 `--dry-run` prints the admin API calls and sends nothing.
 
 The script never prints a password or secret. When it generates the test user's password it writes it to `demo/generated/<user>.password` (created 0600) and prints only that path.
+
+### The demo with its embedded PEP
+
+```bash
+ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or --pep (local)
+docker compose up --build
+```
+
+`--pep [central|local]` (local when the mode is left out; with `--pep-name`, default `pep-gnap-demo`) also does [docs/remote-pep.md](docs/remote-pep.md)'s steps 2 to 6: the PEP's service account in `remote-peps`, a P-256 key made with your `openssl` in `demo/generated/pep-key.pem` (0600, never printed, never in the image), the key certified and the PEP bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy (read on an order needs an `acr`; read on `attribute-protected` needs the directory attribute `attr1` to be `abc123`; anything else is denied), which it then enforces. The realm root is not touched. It writes the `pep` section into `demo/gnap.json`. Run it again, against the same iya-sts or a fresh one, to switch the mode: the account and the key are kept, and a kept key is certified again for a new account. The application's policy is written again on every run while it is this script's own (PolicyId `urn:example:gnapdemo-orders`), so a new rule reaches an existing install; a policy under any other PolicyId is left as it is. `--dry-run` lists these calls too. Then `GET /orders/42` is 200 and `POST /orders/42` 403. The **Policy enforcement** tab's panes (Decisions, Cached policy, The PEP, Control plane, and Try it, which links the two protected pages) draw the PEP's `status()`; `pep.js` redraws them every 2 seconds from `GET /pep-status.html` and keeps a pane you closed closed. `GET /pep-status` is the same as JSON; both answer 401 without a session.
+
+**`GET /attribute-protected`** is decided on a directory attribute rather than a claim: the policy permits `read` on `attribute-protected` when the person's `attr1` is `abc123`, and the PEP asks iya-sts's PIP for it (`POST /xacml/pip`). 401 without a sign-in, 200 on a Permit, 403 on a Deny and on any PEP failure. The install script gives the test user `attr1=abc123`. Defining the realm's custom attribute `attr1` is a Security Administrator's act (it changes the attribute policy): it needs a token carrying `admin:security` whose subject holds `SECURITY_ADMIN`. iya-sts seeds `sts-api-client` in that role, so the script defines `attr1` itself, with an `admin:security` token minted for that one call (every other call carries `admin:read admin:write`). Where an operator has taken the client out of the role, the definition is refused; the value is still tried, and only when it cannot be set because `attr1` is not defined does the script say what a Security Administrator adds under **Directory > Policies > Attribute policy > Custom attributes** (label "Attribute 1", syntax string, one value).
+
+Enforcing the demo application's policy decides nothing at GNAP issuance: its grant asks for plain access rights (`ssf.read`, `ssf.manage`), and iya-sts asks an application's policy only about an `authorization_details` type that application declares.
 
 ### The iya-sts trust chain: `tlsCa`
 
@@ -77,7 +125,7 @@ The trust chain goes in the way a user's does: the script copies the checkout (w
 - Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
 - `LIVE_STS_PORT` (default 18558) and `LIVE_DEMO_PORT` (default 18658) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
 
-A registered GNAP key is not replaced, so run it against a fresh iya-sts each time.
+The script starts a fresh iya-sts each time. `--pep` (or `LIVE_PEP=1`) sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed` within `PEP_FLIP_TIMEOUT` seconds (30). It does not check `/attribute-protected`. Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:live-2028-gnapscope`) both modes gave 200/403 and the flip arrived by event in 1.1 s; that run predates `/attribute-protected` and the `attr1` setup. The nightly run does not pass `--pep`, because `main` lacks iya-sts #2026–#2028. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
 
 The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
 

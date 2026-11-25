@@ -48,14 +48,16 @@ gnap-caep-risc = { version = "…", features = ["local"] }  # local too: decided
 ```
 
 ```rust
-match client.decide_grant(&grant, &Access::new("read", "order", "42")) {
+let decision = client.decide_grant(&grant, &Access::new("read", "order", "42"));
+let status = decision.http_status(); // 200 for a Permit, 403 for anything else
+match decision {
     Decision::Permit { obligations, .. } => { /* discharge them, then serve */ }
     Decision::Deny { .. } => { /* 403 */ }
     Decision::Unavailable { .. } => { /* 403: fail closed, never a Permit */ }
 }
 ```
 
-The section is off unless present, and a build without the feature refuses it. The PEP's key must be its own, and only the claims the realm's AuthZEN catalogue declares are sent. The demo protects `GET /orders/<id>` with the PEP.
+The section is off unless present, and a build without the feature refuses it. A section that names no `mode` is `local`, so a `pep`-only build must name `central`. The PEP's key must be its own, and only the claims the realm's AuthZEN catalogue declares are sent. Every PEP failure is a 403: `Unavailable` (no policy held, iya-sts unreachable, or a panic while deciding, which the PEP catches) is refused like a Deny, and in `central` mode a failed evaluation or heartbeat drops every cached Permit. The Shared Signals receiver tells the PEP how its stream is doing (`requested` or `excluded` while polls succeed, `down` after a failed poll or `stop()`), and the PEP polls its policies itself while it is `down`. The demo protects `GET /orders/<id>` and `GET /attribute-protected` with the PEP.
 
 `src/tests/authzen_cases.json` is this library's AuthZEN table for the PEP. The unit suite runs it in `local` mode against a stub; `python3 scripts/live_iya_sts.py --authzen` runs every case through a `central` and a `local` PEP on a fresh iya-sts and fails unless both give the table's answer. All 58 cases agree against iya-sts `feature/2028` with iya-pep `c0d61ca`; see [docs/remote-pep.md](docs/remote-pep.md#test-that-central-and-local-agree), including the `authzen.returnReasons` setting the run turns on.
 
@@ -123,7 +125,7 @@ The trust chain goes in the way a user's does: the script copies the checkout (w
 - Otherwise the script clones and builds iya-sts `main`, which is what the nightly run does.
 - `LIVE_STS_PORT` (default 18558) and `LIVE_DEMO_PORT` (default 18658) pick the ports. 3000, 8081 and 18481 to 18495 are refused.
 
-The script starts a fresh iya-sts each time. `--pep` sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed`. Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:live-2028-gnapscope`) both modes give 200/403 and the flip arrives by event in 1.1 s. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
+The script starts a fresh iya-sts each time. `--pep` (or `LIVE_PEP=1`) sets the demo's PEP up with the install script (`--pep central`), checks `GET /orders/42` (200) and `POST` (403) in `central` and then `local`, and then rewrites the application's own policy to deny read, which the `local` demo must apply by `pep-policies-changed` within `PEP_FLIP_TIMEOUT` seconds (30). It does not check `/attribute-protected`. Against iya-sts `feature/2028` at `a6cb55cb3` (image `iya-sts:live-2028-gnapscope`) both modes gave 200/403 and the flip arrived by event in 1.1 s; that run predates `/attribute-protected` and the `attr1` setup. The nightly run does not pass `--pep`, because `main` lacks iya-sts #2026–#2028. `LIVE_KEEP=1` leaves the containers running for a post-mortem.
 
 The Nightly workflow runs `docker build --target test .` and then this script every day at 06:59 UTC, and on demand.
 

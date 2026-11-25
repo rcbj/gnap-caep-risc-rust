@@ -2,7 +2,7 @@
 
 This library can ask iya-sts's authorization policy whether the person a GNAP grant names (a `Person`, or the `Grant` itself) may do something to a resource in your application, through an embedded **Remote PEP** (Policy Enforcement Point). The PEP itself is the shared [`iya-pep`](https://github.com/rcbj/iya-pep-rust) crate; this library builds it from your configuration, turns its GNAP sign-in into the PEP's subject, and hands it policy-change events from its Shared Signals stream. The design is [iya-sts #1206](https://github.com/rcbj/iya-sts/issues/1206).
 
-The PEP never permits by default. A decision is `Permit`, `Deny` or `Unavailable`, and `Unavailable` (no policy held yet, or iya-sts unreachable) must be treated as a refusal.
+The PEP never permits by default. A decision is `Permit`, `Deny` or `Unavailable`, and `Unavailable` (no policy held yet, iya-sts unreachable or answering badly, or a panic while deciding, which the PEP catches) is a refusal. Every PEP failure is a 403: `decision.http_status()` is 200 for a Permit and 403 for a Deny and for `Unavailable` alike.
 
 ## Choosing a mode
 
@@ -11,7 +11,7 @@ The PEP never permits by default. A decision is `Permit`, `Deny` or `Unavailable
 | Who decides | iya-sts, per request (`POST /access/v1/evaluation`) | this process, with the PEP's own XACML engine |
 | Cargo feature | `pep` | `local` |
 | Latency | one HTTPS round trip per decision | none after the first pull |
-| When iya-sts is down | every decision is `Unavailable` | decisions continue with the policies held |
+| When iya-sts is down | every decision is `Unavailable`, and any cached Permit is dropped | decisions continue with the policies held |
 | Policy changes | at once | on the `pep-policies-changed` event, or the next poll |
 | Decision records | written by iya-sts | sent by the PEP to iya-sts's audit log |
 
@@ -143,7 +143,7 @@ Add a `pep` section to `gnap.json`. The PEP is off unless it is present.
 | `pollIntervalMs` | 15000 | `local` without a signal stream. |
 | `fallbackPollMs` | 300000 | `local` with one, in case an event is lost. |
 | `heartbeatIntervalMs` | 30000 | How often the PEP reports to iya-sts. |
-| `permitCacheMs` | 0 (off) | `central` only: reuse a Permit for this long, at most 60000. The policy-change event clears it. |
+| `permitCacheMs` | 0 (off) | `central` only: reuse a Permit for this long, at most 60000. The policy-change event clears it, and so does a failed evaluation or a failed heartbeat: no cached Permit is served until the service answers an evaluation again. |
 | `supportedObligations` | `[]` | The obligation types your application discharges (see *Obligations*). |
 | `decisionRecords` | `true` | `local`: send each decision to iya-sts's audit log. |
 | `tlsCa` | the library's `tlsCa` | PEM trust anchors for iya-sts's TLS. |
@@ -183,6 +183,8 @@ Only the properties the catalogue declares are sent.
 **Ended sessions.** `client.decide_grant(&grant, &access)` is a Deny without asking when the grant has ended: it has no subject, this client revoked it, or its access token has expired (rotate it with `ensure_fresh` first).
 
 **Without a `pep` section**, every decision is `Unavailable`.
+
+**`decide` never fails.** No policy held, a service that can't be reached or answers badly, an engine fault, or a panic while deciding is `Unavailable` (a panic's reason goes to `status().last_error`), never a Permit and never an unwinding thread. Take the HTTP status from `http_status()` rather than choosing one per arm; 401 for nobody signed in is your question, asked before the PEP's.
 
 ### Obligations
 
@@ -259,7 +261,7 @@ ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gn
 
 It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account and key and switches the mode; the policy is written again while it is the script's own (PolicyId `urn:example:gnapdemo-orders`), so a new rule reaches an existing install, and a policy under any other PolicyId is left as it is. The test user gets `attr1=abc123`; the script defines the realm's custom attribute `attr1` first, with a token carrying `admin:security` minted for that one call. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.
 
-Live (`scripts/live_iya_sts.py --pep`, iya-sts `feature/2028` at `a6cb55cb3`): `central` and `local` give 200 for read and 403 for write, and after the application's own policy changes, `local` applies it by `pep-policies-changed` in 1.1 s. That needs iya-sts's GNAP subject scope to let the event's application subject through to a GNAP client's stream (`a6cb55cb3`); before it, the event was refused (`STS-SSF-0029`) and `local` waited for its next heartbeat.
+Live (`scripts/live_iya_sts.py --pep`, which checks `/orders/42` only, iya-sts `feature/2028` at `a6cb55cb3`, before `/attribute-protected` and the `attr1` setup were added): `central` and `local` give 200 for read and 403 for write, and after the application's own policy changes, `local` applies it by `pep-policies-changed` in 1.1 s. That needs iya-sts's GNAP subject scope to let the event's application subject through to a GNAP client's stream (`a6cb55cb3`); before it, the event was refused (`STS-SSF-0029`) and `local` waited for its next heartbeat.
 
 ## See also
 

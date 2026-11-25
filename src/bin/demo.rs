@@ -725,12 +725,17 @@ impl Demo {
     }
 
     fn watch(self: &Arc<Self>, grant: &Grant, person: &Person) {
-        {
+        let running = {
             let mut state = self.state.lock().unwrap();
             state.latest = Some(grant.clone());
-            if state.receiver.is_some() {
-                return;
-            }
+            state.receiver.clone()
+        };
+        // Every sign-in is tracked, not only the one that started the
+        // receiver: tracking is what tells the transmitter (Add Subject)
+        // that this person is signed in here.
+        if let Some(receiver) = running {
+            receiver.track(tracked(grant, person));
+            return;
         }
         let Some((transmitter, interval)) = self.signals_wanted() else {
             self.state.lock().unwrap().receiver_state = "not configured (signals are off, or no ssf.transmitter)".into();
@@ -757,6 +762,7 @@ impl Demo {
         });
         opt.tls = client.tls();
         opt.poll_interval_ms = interval;
+        opt.add_subjects = client.config.ssf.as_ref().map_or(true, |ssf| ssf.add_subjects);
         #[cfg(feature = "pep")]
         {
             opt.pep = client.pep().cloned();
@@ -777,17 +783,7 @@ impl Demo {
             return;
         }
         let stream_id = receiver.stream().and_then(|stream| stream.get("stream_id").and_then(|item| item.as_str()).map(|id| id.to_string())).unwrap_or_default();
-        let local = match grant.grant_id.as_deref() {
-            Some(id) if !id.is_empty() => id.to_string(),
-            _ => person.sub.clone(),
-        };
-        receiver.track(TrackedSession {
-            local_id: local,
-            person: Some(person.sub.clone()),
-            email: person.email.clone(),
-            idp_session: person.sid.clone(),
-            expires_at: grant.expires_at,
-        });
+        receiver.track(tracked(grant, person));
         let mut state = self.state.lock().unwrap();
         state.receiver_state = format!("polling stream {stream_id} at {transmitter}");
         state.receiver = Some(receiver);
@@ -1103,6 +1099,16 @@ fn pep_fragment(client: Option<&Client>) -> String {
 </ul><p><small>Each is decided by this PEP against the demo application's own policy; the counters above move as you try them.</small></p></details>");
     out.push_str("<p><small>Refreshed every 2 seconds. <a href=\"/pep-status\">As JSON</a>.</small></p>");
     out
+}
+
+/// What the receiver follows for one sign-in: the grant (its id, else the
+/// subject) and the person, whose subject `track` adds at the transmitter.
+fn tracked(grant: &Grant, person: &Person) -> TrackedSession {
+    let local = match grant.grant_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => person.sub.clone(),
+    };
+    TrackedSession { local_id: local, person: Some(person.sub.clone()), email: person.email.clone(), idp_session: person.sid.clone(), expires_at: grant.expires_at }
 }
 
 fn now_secs() -> f64 {

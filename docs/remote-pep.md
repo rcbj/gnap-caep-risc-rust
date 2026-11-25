@@ -173,7 +173,7 @@ match client.decide_grant(&grant, &access) {
 
 **The subject** comes from the sign-in, never from a request header:
 
-- **id:** the username from the grant's `account` subject identifier (iya-sts builds it from the directory username), else the ID token's `preferred_username`, else `sub` (which can be pairwise, so it's the last resort).
+- **id:** the username: the user part of the grant's `account` subject identifier (iya-sts builds it from the directory username), else iya-sts's `username` claim in the ID token assertion, else its `preferred_username` (a `profile` claim, there only when that scope was granted), else `sub` (which can be pairwise, so it's the last resort).
 - **properties:** the ID token's claims (`acr`, `amr`, `auth_time`, …), with `acr` and `amr` filled from the `Person` when the claims lack them.
 
 Only the properties the catalogue declares are sent.
@@ -201,6 +201,8 @@ let receiver = SignalsReceiver::new(opt)?;
 ```
 
 The receiver then asks its stream for `urn:iya:sts:secevent:event-type:pep-policies-changed`, verifies each SET like every other one, and hands the event to the PEP. A stream that already exists (made before the `pep` section was added, or while the PEP was `central`) is updated with `PATCH` to ask for the event too; if the transmitter refuses, the receiver still starts, the refusal goes to `ReceiverOpt::on_error` (standard output without one), and the PEP's heartbeat reports the event as `excluded`. The event is only a hint: the PEP pulls with its own credential and never trusts the event's contents. An event naming another PEP is ignored.
+
+The receiver also tells the PEP how its stream is doing, which the heartbeat reports and the PEP's own policy poll follows: `requested` (or `excluded`) once it starts and after every good poll, `down` after a failed poll and once `stop()` is called. While it is `down` the PEP polls its policies itself.
 
 ## Operate it
 
@@ -235,7 +237,17 @@ Against iya-sts `feature/2028` with iya-pep `c0d61ca`, all 58 cases agree: `cent
 
 ## The demo
 
-Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, and 403 on a Deny and on `Unavailable` (any PEP failure is a 403: the page says the PEP could not decide). `GET /live-status` carries the PEP's `status()` under `pep`. The signed-in page has two tabs: **Session** and **Policy enforcement** (`/?tab=pep`), whose four collapsible panes (Decisions, Cached policy, The PEP, Control plane) draw the PEP's `status()`; `pep.js` redraws them every 2 seconds from `GET /pep-status.html` and keeps a pane you closed closed. `GET /pep-status` is the same as JSON; both answer 401 without a session. With no `pep` section the tab says so.
+Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, and 403 on a Deny and on `Unavailable` (any PEP failure is a 403: the page says the PEP could not decide). `GET /attribute-protected` is decided the same way on a directory attribute rather than a claim: the demo application's policy permits `read` on `attribute-protected` when the person's `attr1` is `abc123`, which the PEP asks iya-sts's PIP for (`POST /xacml/pip`). `GET /live-status` carries the PEP's `status()` under `pep`.
+
+Its signed-in page has a **Policy enforcement** tab (`/?tab=pep`) showing what the PEP reports, refreshed every two seconds (`pep.js` redraws it from `GET /pep-status.html` and keeps a pane you closed closed):
+
+- **Decisions:** how many, allowed, denied, unavailable, stopped by an obligation, and the mean and slowest time per decision (plus the Permit cache in `central` mode).
+- **Cached policy:** policies held, when the cached policy last changed, the last and the next scheduled pull, pulls (changed, failed), policy-change events, the catalogue claims sent, and the policy set's and catalogue's versions.
+- **The PEP:** name, mode, application, iya-sts, registered, running and uptime, whether the stream carries policy-change events, the protocol version and the key's thumbprint.
+- **Control plane:** heartbeats (last, next, failed), registrations, and decision records queued, sent and dropped.
+- **Try it:** links to `/orders/42` and `/attribute-protected`.
+
+`GET /pep-status` answers the same as JSON for a dashboard of your own; both answer 401 without a session. Every number comes from `pep().unwrap().status()`, which your application can read the same way. With no `pep` section the tab says so.
 
 One command sets it up:
 
@@ -243,7 +255,7 @@ One command sets it up:
 ADMIN_API_CLIENT_SECRET=… python scripts/configure_iya_sts.py --config demo/gnap.json --pep central   # or --pep (local)
 ```
 
-It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account, key and policy and switches the mode. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.
+It registers the client, then does steps 2 to 6: the service account `pep-gnap-demo` (`--pep-name`), a key in `demo/generated/pep-key.pem`, certified and bound to the demo's application, the catalogue row `subject.acr`, and the application's own policy, which it enforces; the realm root is untouched. It writes `pep` (`name`, `mode`, `assertionKey: generated/pep-key.pem`) into the configuration. Run again, it keeps the account and key and switches the mode; the policy is written again while it is the script's own (PolicyId `urn:example:gnapdemo-orders`), so a new rule reaches an existing install, and a policy under any other PolicyId is left as it is. The test user gets `attr1=abc123`; the script defines the realm's custom attribute `attr1` first, with a token carrying `admin:security` minted for that one call. Enforcing the demo application decides nothing at GNAP issuance, because its grant asks for plain access rights, not an `authorization_details` type it declares.
 
 Live (`scripts/live_iya_sts.py --pep`, iya-sts `feature/2028` at `a6cb55cb3`): `central` and `local` give 200 for read and 403 for write, and after the application's own policy changes, `local` applies it by `pep-policies-changed` in 1.1 s. That needs iya-sts's GNAP subject scope to let the event's application subject through to a GNAP client's stream (`a6cb55cb3`); before it, the event was refused (`STS-SSF-0029`) and `local` waited for its next heartbeat.
 

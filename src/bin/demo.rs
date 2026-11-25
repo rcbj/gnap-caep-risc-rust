@@ -1693,6 +1693,12 @@ fn replace_origin(value: &str, public: &str) -> String {
     next.to_string()
 }
 
+// The library's stub iya-sts realm (std and serde_json only), for the
+// protected-page tests below.
+#[cfg(all(test, feature = "local"))]
+#[path = "../tests/stub_realm.rs"]
+mod stub_realm;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2068,5 +2074,162 @@ mod tests {
         assert!(html.contains("<details class=\"card pane\" id=\"pep-problems\" open>"), "the problem is a pane too");
         let v = pep_json(Some(&client));
         assert_eq!((v["enabled"].clone(), v["mode"].clone(), v["decisions"]["unavailable"].clone()), (Value::Bool(true), Value::from("central"), Value::from(1)));
+    }
+
+    /// The demo's two PEP-protected pages through `dispatch`, with a `local`
+    /// PEP holding the demo application's own policy against the stub realm
+    /// (`src/tests/stub_realm.rs`). The policy is `src/tests/demo_orders_policy.xml`,
+    /// the XACML iya-sts stores for `scripts/configure_iya_sts.py`'s
+    /// `orders_policy()` ALFA (`live_iya_sts.py --pep` compares the two), and
+    /// the stub's PIP answers `attr1` per person, as iya-sts's directory does.
+    #[cfg(feature = "local")]
+    mod protected {
+        use super::*;
+        use crate::stub_realm::{self, policy_entry, Realm};
+        use gnap_caep_risc::pep::{Access, Decision};
+
+        const POLICY: &str = include_str!("../tests/demo_orders_policy.xml");
+        const APPLICATION: &str = "gnap-caep-risc-demo";
+        const ATTR1: &str = "urn:sts:xacml:attribute:attr1";
+
+        /// The demo reading a configuration whose `pep` section is `local`,
+        /// on a stub realm; the PEP ready (registered, the policy held).
+        fn pep_demo(tag: &str) -> (Arc<Demo>, &'static Realm) {
+            let directory = serde_json::json!({
+                "allowed-user": {ATTR1: "abc123"},
+                "denied-user": {ATTR1: "not-abc123"},
+                "no-attr-user": {},
+                "no-acr-user": {ATTR1: "abc123"},
+            });
+            let rows = serde_json::json!([{"object": "subject", "property": "acr", "attributeId": "urn:example:acr"}]);
+            let realm = stub_realm::start("demo", vec![policy_entry("gnap-caep-risc-demo-fga", POLICY, true)], rows, Value::Bool(true), vec![Value::from(APPLICATION)], directory);
+            let dir = std::env::temp_dir().join(format!("gnap-demo-protected-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pep-key.pem"), key_pem(8)).unwrap();
+            let doc = serde_json::json!({
+                "grantEndpoint": format!("{}/gnap", realm.realm()), "application": APPLICATION, "privateKey": key_pem(7),
+                "keyProof": "httpsig", "allowInsecure": true, "signals": false, "access": ["orders.read"],
+                "pep": {"name": "pep-gnap-demo", "mode": "local", "assertionKey": "pep-key.pem", "signals": false,
+                        "pollIntervalMs": 2000, "heartbeatIntervalMs": 60000}
+            });
+            std::fs::write(dir.join("gnap.json"), doc.to_string()).unwrap();
+            let mut demo = Demo::new("http://127.0.0.1:1".into(), true, "1".into());
+            demo.config_path = dir.join("gnap.json");
+            demo.public_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("demo/public");
+            let demo = Arc::new(demo);
+            let client = demo.ensure_client().expect("the demo's client, with its PEP");
+            let pep = client.pep().expect("a pep section");
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let s = pep.status();
+                if s.registered && s.holds_policy {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "the PEP did not get ready: {}", s.last_error);
+                thread::sleep(Duration::from_millis(100));
+            }
+            (demo, realm)
+        }
+
+        /// One signed-in browser for `uid`: a grant naming that person, with
+        /// an `acr` in the ID token assertion's claims when `acr`.
+        fn sign_in(demo: &Demo, uid: &str, acr: bool) -> Vec<(String, String)> {
+            let mut claims = serde_json::json!({"sub": format!("sub-{uid}"), "username": uid});
+            if acr {
+                claims["acr"] = Value::from("urn:example:loa:2");
+            }
+            let mut person = person_named(Some(uid), claims);
+            person.sub = format!("sub-{uid}");
+            person.acr = acr.then(|| "urn:example:loa:2".to_string());
+            let mut session = record(Some(person.clone()), "t");
+            session.grant.subject = Some(person);
+            demo.state.lock().unwrap().sessions.insert(format!("s-{uid}"), session);
+            vec![("cookie".into(), format!("gsid={}", demo.seal(&serde_json::json!({"id": format!("s-{uid}")}))))]
+        }
+
+        fn page(demo: &Arc<Demo>, method: &str, path: &str, cookie: &[(String, String)]) -> (u16, String) {
+            let out = demo.dispatch(&with(method, path, &[], cookie)).outgoing;
+            (out.status, String::from_utf8(out.body).unwrap())
+        }
+
+        /// The status the PEP's own decision gives for the same access, and
+        /// whether it was a Permit, from the session the cookie names.
+        fn pep_says(demo: &Arc<Demo>, cookie: &[(String, String)], access: Access) -> (u16, bool) {
+            let session = demo.session(&with("GET", "/", &[], cookie)).unwrap();
+            let decision = demo.try_client().unwrap().decide_grant(&session.grant, &access);
+            (decision.http_status(), matches!(decision, Decision::Permit { .. }))
+        }
+
+        #[test]
+        fn the_allowed_user_reads_both_protected_pages() {
+            let (demo, realm) = pep_demo("allowed");
+            let cookie = sign_in(&demo, "allowed-user", true);
+            let (status, html) = page(&demo, "GET", "/attribute-protected", &cookie);
+            assert_eq!(status, 200, "{html}");
+            assert!(html.contains("<title>Attribute-protected</title>") && html.contains("<h1>Allowed</h1>"), "{html}");
+            assert!(html.contains("The PEP permitted it: your <code>attr1</code> is <code>abc123</code>."), "{html}");
+            assert_eq!(pep_says(&demo, &cookie, Access::new("read", "attribute-protected", "attr1")), (status, true), "the status is the decision's http_status()");
+            assert!(realm.seen.lock().unwrap().iter().any(|s| s == "POST /xacml/pip"), "attr1 came from the PIP, not the grant");
+
+            let (status, html) = page(&demo, "GET", "/orders/42", &cookie);
+            assert_eq!(status, 200, "{html}");
+            assert!(html.contains("<title>Order</title>") && html.contains("<h1>Order 42</h1>") && html.contains("The PEP permitted <code>read</code>."), "{html}");
+            assert_eq!(pep_says(&demo, &cookie, Access::new("read", "order", "42")), (status, true));
+            assert!(html.contains("acct-menu") && html.contains("href=\"/attribute-protected\""), "the top bar is on a protected page");
+        }
+
+        #[test]
+        fn a_user_without_attr1_abc123_is_refused_the_attribute_page() {
+            let (demo, _realm) = pep_demo("denied");
+            for uid in ["denied-user", "no-attr-user", "nobody-the-directory-knows"] {
+                let cookie = sign_in(&demo, uid, true);
+                let (status, html) = page(&demo, "GET", "/attribute-protected", &cookie);
+                assert_eq!(status, 403, "{uid}: {html}");
+                assert!(html.contains("<title>Forbidden</title>") && html.contains("<h1>Not allowed</h1>") && html.contains("The PEP denied it"), "{uid}: {html}");
+                assert!(!html.contains("The PEP permitted"), "{uid}");
+                assert_eq!(pep_says(&demo, &cookie, Access::new("read", "attribute-protected", "attr1")), (403, false), "{uid}: a Deny, through http_status()");
+                // The order rule does not read attr1: an acr is enough.
+                let (status, html) = page(&demo, "GET", "/orders/42", &cookie);
+                assert_eq!(status, 200, "{uid}: {html}");
+            }
+        }
+
+        #[test]
+        fn writing_an_order_is_refused_to_everyone() {
+            let (demo, _realm) = pep_demo("write");
+            for uid in ["allowed-user", "denied-user"] {
+                let cookie = sign_in(&demo, uid, true);
+                let (status, html) = page(&demo, "POST", "/orders/42", &cookie);
+                assert_eq!(status, 403, "{uid}: {html}");
+                assert!(html.contains("<h1>Not allowed</h1>") && html.contains("The PEP denied <code>write</code> on order 42"), "{uid}: {html}");
+                assert_eq!(pep_says(&demo, &cookie, Access::new("write", "order", "42")), (403, false));
+            }
+        }
+
+        #[test]
+        fn a_sign_in_without_an_acr_cannot_read_an_order() {
+            let (demo, _realm) = pep_demo("no-acr");
+            let cookie = sign_in(&demo, "no-acr-user", false);
+            let (status, html) = page(&demo, "GET", "/orders/42", &cookie);
+            assert_eq!(status, 403, "{html}");
+            assert!(html.contains("<h1>Not allowed</h1>") && html.contains("The PEP denied <code>read</code> on order 42"), "{html}");
+            assert_eq!(pep_says(&demo, &cookie, Access::new("read", "order", "42")), (403, false));
+            // attr1 is still abc123: the attribute page does not read the acr.
+            assert_eq!(page(&demo, "GET", "/attribute-protected", &cookie).0, 200);
+        }
+
+        #[test]
+        fn signed_out_both_protected_pages_are_401() {
+            let (demo, _realm) = pep_demo("signed-out");
+            let stale = vec![("cookie".to_string(), format!("gsid={}", demo.seal(&serde_json::json!({"id": "ended"}))))];
+            for cookie in [Vec::new(), stale] {
+                for (method, path) in [("GET", "/attribute-protected"), ("GET", "/orders/42"), ("POST", "/orders/42")] {
+                    let (status, html) = page(&demo, method, path, &cookie);
+                    assert_eq!(status, 401, "{method} {path}: {html}");
+                    assert!(html.contains("<h1>Sign in first</h1>") && html.contains("href=\"/login\""), "{html}");
+                    assert!(!html.contains("acct-menu"));
+                }
+            }
+        }
     }
 }

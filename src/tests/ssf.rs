@@ -11,10 +11,12 @@ use serde_json::{json, Map, Value};
 use sha2::Sha256;
 use signature::{SignatureEncoding, Signer};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+
+pub(super) use super::stub_realm::read_http;
 use std::time::Duration;
 
 fn b64url(data: &[u8]) -> String {
@@ -218,52 +220,6 @@ pub(super) fn http(status: u16, body: &str) -> String {
 
 fn http_empty(status: u16) -> String {
     format!("HTTP/1.1 {status} No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
-}
-
-pub(super) fn read_http(stream: &mut impl Read) -> Result<(String, String, HashMap<String, String>, String), String> {
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 4096];
-    loop {
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(err) => return Err(err.to_string()),
-        }
-        if let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            let header = String::from_utf8_lossy(&buf[..split]).to_string();
-            let need = content_length(&header);
-            if buf.len() >= split + 4 + need {
-                break;
-            }
-        }
-    }
-    let split = buf.windows(4).position(|w| w == b"\r\n\r\n").ok_or("short")?;
-    let header = String::from_utf8_lossy(&buf[..split]).to_string();
-    let body = String::from_utf8_lossy(&buf[split + 4..]).to_string();
-    let mut lines = header.split("\r\n");
-    let request = lines.next().unwrap_or("");
-    let mut parts = request.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("");
-    let path = target.split('?').next().unwrap_or("").to_string();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-    Ok((method, path, headers, body))
-}
-
-fn content_length(header: &str) -> usize {
-    header.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        if name.eq_ignore_ascii_case("content-length") {
-            value.trim().parse().ok()
-        } else {
-            None
-        }
-    }).unwrap_or(0)
 }
 
 #[test]

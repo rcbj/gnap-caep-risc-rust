@@ -9,6 +9,7 @@ mod install_script;
 #[cfg(feature = "pep")]
 mod pep;
 mod ssf;
+mod stub_realm;
 mod subject;
 mod trust_chain;
 

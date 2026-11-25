@@ -164,7 +164,7 @@ let access = Access::new("read", "order", order_id);
 match client.decide_grant(&grant, &access) {
     Decision::Permit { obligations, .. } => serve(obligations),
     Decision::Deny { why } => forbidden(&why),          // 403
-    Decision::Unavailable { why } => unavailable(&why), // 503: fail closed
+    Decision::Unavailable { why } => forbidden(&why),   // 403: fail closed
 }
 // For a Person you hold yourself: client.decide(&person, &access)
 ```
@@ -235,7 +235,7 @@ Against iya-sts `feature/2028` with iya-pep `c0d61ca`, all 58 cases agree: `cent
 
 ## The demo
 
-Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, 403 on a Deny and 503 on `Unavailable`. `GET /live-status` carries the PEP's `status()` under `pep`. The signed-in page has two tabs: **Session** and **Policy enforcement** (`/?tab=pep`), whose four collapsible panes (Decisions, Cached policy, The PEP, Control plane) draw the PEP's `status()`; `pep.js` redraws them every 2 seconds from `GET /pep-status.html` and keeps a pane you closed closed. `GET /pep-status` is the same as JSON; both answer 401 without a session. With no `pep` section the tab says so.
+Built with `local` (the Dockerfile does), the demo protects `GET /orders/<id>` with the PEP when `demo/gnap.json` has a `pep` section: 401 without a sign-in, 200 on a Permit, and 403 on a Deny and on `Unavailable` (any PEP failure is a 403: the page says the PEP could not decide). `GET /live-status` carries the PEP's `status()` under `pep`. The signed-in page has two tabs: **Session** and **Policy enforcement** (`/?tab=pep`), whose four collapsible panes (Decisions, Cached policy, The PEP, Control plane) draw the PEP's `status()`; `pep.js` redraws them every 2 seconds from `GET /pep-status.html` and keeps a pane you closed closed. `GET /pep-status` is the same as JSON; both answer 401 without a session. With no `pep` section the tab says so.
 
 One command sets it up:
 

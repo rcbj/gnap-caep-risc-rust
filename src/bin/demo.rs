@@ -218,8 +218,10 @@ impl Demo {
     /// A route the embedded PEP protects (the `pep` feature, iya-sts#1206):
     /// the signed-in person's access to one order, decided by the `pep`
     /// section's PEP from the grant's subject. A GET is `read` and anything
-    /// else `write`. No sign-in is 401, a Deny 403, and a decision that
-    /// couldn't be made 503: never served.
+    /// else `write`. No sign-in is 401, a Deny 403, and any other PEP
+    /// failure 403 too (no decision, or no GNAP client to ask): an
+    /// enforcement point that cannot say yes says no, and the page says
+    /// which. Never served.
     #[cfg(feature = "pep")]
     fn order(&self, req: &Request, method: &str, id: &str) -> Outcome {
         use gnap_caep_risc::pep::{Access, Decision};
@@ -227,7 +229,7 @@ impl Demo {
             return self.html(401, "Sign in", "<h1>Sign in first</h1><p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>", Vec::new());
         };
         let Some(client) = self.try_client() else {
-            return self.html(503, "Unavailable", "<h1>The GNAP client is not configured</h1>", Vec::new());
+            return self.html(403, "Forbidden", "<h1>Not allowed</h1><p class=\"problem\">No decision could be asked for: the GNAP client is not configured.</p>", Vec::new());
         };
         let action = if method == "GET" { "read" } else { "write" };
         match client.decide_grant(&session.grant, &Access::new(action, "order", id)) {
@@ -242,7 +244,7 @@ impl Demo {
             }
             Decision::Unavailable { why } => {
                 let body = format!("<h1>No decision</h1><p>The PEP could not decide: {}</p>", escape(&why));
-                self.html(503, "Unavailable", &body, Vec::new())
+                self.html(403, "Forbidden", &body, Vec::new())
             }
         }
     }

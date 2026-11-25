@@ -5,6 +5,7 @@
 mod authzen;
 mod client;
 mod config;
+mod install_script;
 #[cfg(feature = "pep")]
 mod pep;
 mod ssf;

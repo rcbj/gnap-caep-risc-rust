@@ -461,7 +461,7 @@ dependencies = [
  "const-oid 0.9.6",
  "iya-pep",
  "p256",
- "pkcs8 0.10.2",
+ "pkcs8 0.11.0",
  "rand",
  "rcgen",
  "rsa",

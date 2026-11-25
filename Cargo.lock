@@ -458,7 +458,7 @@ name = "gnap-caep-risc"
 version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
- "const-oid 0.9.6",
+ "const-oid 0.10.2",
  "iya-pep",
  "p256",
  "pkcs8 0.10.2",

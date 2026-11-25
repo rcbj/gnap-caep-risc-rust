@@ -286,7 +286,10 @@ pub struct ReceiverOpt {
     /// (SSF 1.0 §8.1.3.2 and §8.1.3.3): Add Subject when `track` starts
     /// following a person's first sign-in, Remove Subject when the last one
     /// ends (`untrack`, or an event that ends it). Default `true`, from
-    /// `ssf.addSubjects`. Skipped when the transmitter publishes no
+    /// `ssf.addSubjects`. With `pep` (when it wants events), `start` also adds
+    /// the application (`{format: opaque, id: <application>}`) and never
+    /// removes it, so `pep-policies-changed` still reaches a stream that names
+    /// people. Skipped when the transmitter publishes no
     /// `add_subject_endpoint` (or `remove_subject_endpoint`, for removal).
     pub add_subjects: bool,
     /// The client's embedded PEP (`client.pep().cloned()`; the `pep`
@@ -520,6 +523,24 @@ impl SignalsReceiver {
         {
             let mut inner = self.shared.inner.lock().unwrap();
             inner.stream = Some(stream);
+        }
+        // A transmitter narrows a stream that names subjects to those subjects
+        // (iya-sts; SSF 1.0 8.1.3). `pep-policies-changed` is about the
+        // application the PEP is embedded in: iya-sts's complex subject whose
+        // `application` member is {format: opaque, id: <application>}, which
+        // GNAP's subject scope (iya-sts#2028) lets through to the
+        // application's own stream. Once people are added, the stream would
+        // stop carrying it unless the application is named too; so a receiver
+        // whose PEP wants events names it here, before anyone, and never
+        // removes it.
+        #[cfg(feature = "pep")]
+        if self.shared.add_subjects {
+            if let Some(pep) = &self.shared.pep {
+                let application = pep.config().application.clone();
+                if !application.is_empty() {
+                    self.shared.add_subject(serde_json::json!({"format": "opaque", "id": application}), "the application its PEP hears about");
+                }
+            }
         }
         // The people tracked before the stream was known: Add Subject now.
         let tracked: Vec<TrackedSession> = self.shared.inner.lock().unwrap().index.sessions.clone();
@@ -1006,8 +1027,15 @@ impl Shared {
         if !self.add_subjects {
             return;
         }
-        let Some((endpoint, stream_id)) = self.subject_endpoint("add_subject_endpoint") else { return };
         let Some(subject) = self.subject_of_session(session) else { return };
+        self.add_subject(subject, "a signed-in person");
+    }
+
+    /// Add Subject for `subject` (`what` names it in a reported line, never
+    /// its identifier), once: a subject the transmitter accepted is not sent
+    /// again.
+    fn add_subject(&self, subject: Value, what: &str) {
+        let Some((endpoint, stream_id)) = self.subject_endpoint("add_subject_endpoint") else { return };
         let key = subject.to_string();
         if self.inner.lock().unwrap().added.contains(&key) {
             return;
@@ -1019,8 +1047,8 @@ impl Shared {
                 self.inner.lock().unwrap().added.insert(key);
             }
             // The person's identifier stays out of the line.
-            Ok((status, parsed)) => self.report(&format!("ssf: Add Subject ({format}) for a signed-in person on stream {stream_id} answered {status}: {}", clip(&parsed))),
-            Err(err) => self.report(&format!("ssf: Add Subject ({format}) for a signed-in person on stream {stream_id} failed: {err}")),
+            Ok((status, parsed)) => self.report(&format!("ssf: Add Subject ({format}) for {what} on stream {stream_id} answered {status}: {}", clip(&parsed))),
+            Err(err) => self.report(&format!("ssf: Add Subject ({format}) for {what} on stream {stream_id} failed: {err}")),
         }
     }
 

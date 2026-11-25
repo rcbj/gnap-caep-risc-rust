@@ -512,6 +512,59 @@ fn a_reused_stream_gets_the_policy_event_added() {
     refused.stop();
 }
 
+/// A stream that names subjects carries only events about them (iya-sts),
+/// and `pep-policies-changed` is about the application (the `application`
+/// member, `{format: opaque, id}`, of iya-sts's complex subject, which GNAP's
+/// subject scope lets through, iya-sts#2028): a receiver that adds people
+/// names the application too, at `start`, before anyone, and never removes it.
+#[test]
+fn a_receiver_adding_subjects_names_the_application_its_pep_hears_about() {
+    let pdp = start_pdp();
+    let receiver_on = |transmitter: &str, pep: Option<Arc<crate::pep::Pep>>, add_subjects: bool| {
+        let mut opt = ReceiverOpt::new(transmitter.to_string(), Arc::new(|_, _| {}));
+        opt.poll_interval_ms = 60_000;
+        opt.headers = Some(Arc::new(|_, _, _| vec![("authorization".into(), "GNAP app-token".into())]));
+        opt.on_error = Some(Arc::new(|_: &str| {}));
+        opt.add_subjects = add_subjects;
+        opt.pep = pep;
+        SignalsReceiver::new(opt).unwrap()
+    };
+    let (_server, tx, transmitter) = start_transmitter();
+    tx.lock().unwrap().subject_endpoints = true;
+    let local = client(pdp, json!({"ssf": {"transmitter": transmitter}}), json!({"mode": "local"}));
+    let receiver = receiver_on(&transmitter, local.pep().cloned(), true);
+    receiver.track(crate::TrackedSession { local_id: "g1".into(), person: Some("alice".into()), email: None, idp_session: None, expires_at: None });
+    receiver.start().unwrap();
+    let application = json!({"format": "opaque", "id": "gnap-caep-risc-demo"});
+    let calls = tx.lock().unwrap().subject_calls.clone();
+    assert_eq!(calls[0], ("add".to_string(), json!({"stream_id": "s1", "subject": application, "verified": true})), "the application first: {calls:?}");
+    assert_eq!(calls.len(), 2, "then the person tracked before start: {calls:?}");
+    receiver.untrack("g1");
+    receiver.track(crate::TrackedSession { local_id: "g2".into(), person: Some("bob".into()), email: None, idp_session: None, expires_at: None });
+    receiver.untrack("g2");
+    let calls = tx.lock().unwrap().subject_calls.clone();
+    assert_eq!(calls.len(), 5, "alice removed, bob added and removed: {calls:?}");
+    assert!(!calls.iter().any(|(kind, body)| kind == "remove" && body["subject"] == application), "the application is never removed: {calls:?}");
+    // A restart adds nothing again: the transmitter accepted it.
+    receiver.stop();
+    receiver.start().unwrap();
+    assert_eq!(tx.lock().unwrap().subject_calls.len(), 5);
+    receiver.stop();
+
+    // Switched off, no PEP, or a PEP that wants no events (central, no
+    // Permit cache): the application is not named.
+    let (_server, tx, transmitter) = start_transmitter();
+    tx.lock().unwrap().subject_endpoints = true;
+    let central = client(pdp, json!({"ssf": {"transmitter": transmitter}}), json!({}));
+    for (pep, add) in [(local.pep().cloned(), false), (None, true), (central.pep().cloned(), true)] {
+        let quiet = receiver_on(&transmitter, pep, add);
+        quiet.start().unwrap();
+        quiet.stop();
+    }
+    assert!(tx.lock().unwrap().subject_calls.is_empty(), "{:?}", tx.lock().unwrap().subject_calls);
+    local.pep().unwrap().stop();
+}
+
 /// The PEP's view of its event stream follows the receiver: nothing before
 /// it starts (`Down`, signals being on), what the stream carries once it
 /// starts, `Down` after a failed poll (the PEP polls its own policies then),

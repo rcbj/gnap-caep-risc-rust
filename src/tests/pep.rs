@@ -326,6 +326,16 @@ fn a_grants_person_becomes_the_peps_subject() {
     let mut no_account = person();
     no_account.uid = None;
     assert_eq!(subject_for(&no_account).id, "alice.token", "then the ID token's preferred_username");
+    let mut claimed = no_account.clone();
+    claimed.claims.insert("username".into(), json!("alice-u"));
+    assert_eq!(subject_for(&claimed).id, "alice-u", "iya-sts's username claim comes before preferred_username");
+    claimed.preferred_username = None;
+    assert_eq!(subject_for(&claimed).id, "alice-u", "and stands alone without the profile scope");
+    claimed.claims.insert("username".into(), json!(""));
+    assert_eq!(subject_for(&claimed).id, "0b6e-pairwise", "an empty username is no username");
+    let mut both = person();
+    both.claims.insert("username".into(), json!("alice-u"));
+    assert_eq!(subject_for(&both).id, "alice", "the account identifier still comes first");
     let mut bare = person();
     bare.uid = None;
     bare.preferred_username = None;
@@ -466,7 +476,6 @@ fn a_reused_stream_gets_the_policy_event_added() {
     tx.lock().unwrap().streams.push(old(&transmitter, "old"));
     let receiver = receiver_for(&transmitter, client.pep().cloned());
     receiver.start().unwrap();
-    receiver.stop();
     assert_eq!(tx.lock().unwrap().created, 0, "the stream was reused, not made again");
     let patches = tx.lock().unwrap().patches.clone();
     assert_eq!(patches.len(), 1, "{patches:?}");
@@ -479,6 +488,9 @@ fn a_reused_stream_gets_the_policy_event_added() {
     assert_eq!(stream["delivery"]["endpoint_url"], format!("{transmitter}/ssf/poll/old"), "the delivery the listing gave is kept");
     assert!(errors.lock().unwrap().is_empty(), "{:?}", errors.lock().unwrap());
     assert_policy_events(pdp, "requested");
+    // A stopped receiver hears nothing: the PEP polls from then on.
+    receiver.stop();
+    assert_eq!(client.pep().unwrap().status().event_stream, crate::pep::EventStream::Down);
 
     // Nothing missing: no PATCH.
     let again = receiver_for(&transmitter, client.pep().cloned());
@@ -493,10 +505,49 @@ fn a_reused_stream_gets_the_policy_event_added() {
     tx.lock().unwrap().streams.push(old(&transmitter, "fixed"));
     let refused = receiver_for(&transmitter, client.pep().cloned());
     refused.start().unwrap();
-    refused.stop();
     assert_eq!(tx.lock().unwrap().patches.len(), 1);
     assert!(errors.lock().unwrap().iter().any(|l| l.contains("answered 405")), "{:?}", errors.lock().unwrap());
+    assert_eq!(client.pep().unwrap().status().event_stream, crate::pep::EventStream::Excluded, "running, and the stream does not carry the event");
     assert_policy_events(pdp, "excluded");
+    refused.stop();
+}
+
+/// The PEP's view of its event stream follows the receiver: nothing before
+/// it starts (`Down`, signals being on), what the stream carries once it
+/// starts, `Down` after a failed poll (the PEP polls its own policies then),
+/// back after a good one, and `Down` again once stopped.
+#[test]
+fn the_peps_stream_state_follows_the_polls() {
+    use crate::pep::EventStream;
+    let pdp = start_pdp();
+    let (_server, tx, transmitter) = start_transmitter();
+    let client = client(pdp, json!({"ssf": {"transmitter": transmitter}}), json!({"permitCacheMs": 30000}));
+    let pep = client.pep().cloned().unwrap();
+    let mut opt = ReceiverOpt::new(transmitter.clone(), Arc::new(|_, _| {}));
+    opt.poll_interval_ms = 60_000;
+    opt.headers = Some(Arc::new(|_, _, _| vec![("authorization".into(), "GNAP app-token".into())]));
+    opt.on_error = Some(Arc::new(|_: &str| {}));
+    opt.pep = Some(Arc::clone(&pep));
+    let receiver = SignalsReceiver::new(opt).unwrap();
+    assert_eq!(pep.status().event_stream, EventStream::Down, "nothing reported before the receiver starts");
+    receiver.start().unwrap();
+    assert_eq!(pep.status().event_stream, EventStream::Requested);
+    // The background thread polls once at start, then waits a minute: let
+    // that poll land first, so the ones below are this test's own.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while tx.lock().unwrap().polls == 0 {
+        assert!(std::time::Instant::now() < deadline, "the receiver never polled");
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(100));
+    tx.lock().unwrap().poll_status = 503;
+    assert!(receiver.poll_once().is_err());
+    assert_eq!(pep.status().event_stream, EventStream::Down, "a failed poll: down");
+    tx.lock().unwrap().poll_status = 0;
+    receiver.poll_once().unwrap();
+    assert_eq!(pep.status().event_stream, EventStream::Requested, "a good poll: what the stream carries");
+    receiver.stop();
+    assert_eq!(pep.status().event_stream, EventStream::Down, "a stopped receiver hears nothing");
 }
 
 #[cfg(feature = "local")]

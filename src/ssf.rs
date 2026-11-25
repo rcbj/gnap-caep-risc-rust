@@ -348,6 +348,10 @@ struct Shared {
     /// whether the stream does.
     #[cfg(feature = "pep")]
     pep: Option<Arc<crate::pep::Pep>>,
+    /// What the stream carries for the PEP (`Requested` or `Excluded`), once
+    /// `start` knows: a failed poll reports `Down`, and the next good one this.
+    #[cfg(feature = "pep")]
+    pep_stream: Mutex<Option<crate::pep::EventStream>>,
     inner: Mutex<Inner>,
     flight: Mutex<Option<Arc<Flight>>>,
     running: AtomicBool,
@@ -402,6 +406,8 @@ impl SignalsReceiver {
                 on_error: opt.on_error,
                 #[cfg(feature = "pep")]
                 pep: event_pep,
+                #[cfg(feature = "pep")]
+                pep_stream: Mutex::new(None),
                 inner: Mutex::new(Inner {
                     config: None,
                     stream: None,
@@ -460,7 +466,9 @@ impl SignalsReceiver {
         if let Some(pep) = &self.shared.pep {
             let carries = |name: &str| stream.get(name).and_then(Value::as_array).map(|list| list.iter().any(|v| v.as_str() == Some(crate::pep::POLICIES_CHANGED_EVENT)));
             let carried = carries("events_delivered").or_else(|| carries("events_requested")).unwrap_or(true);
-            pep.set_event_stream(if carried { crate::pep::EventStream::Requested } else { crate::pep::EventStream::Excluded });
+            let state = if carried { crate::pep::EventStream::Requested } else { crate::pep::EventStream::Excluded };
+            pep.set_event_stream(state);
+            *self.shared.pep_stream.lock().unwrap() = Some(state);
         }
         let endpoint = stream.get("delivery").and_then(|v| v.as_object()).and_then(|d| d.get("endpoint_url")).and_then(|v| v.as_str()).unwrap_or("").to_string();
         if endpoint.is_empty() {
@@ -490,6 +498,11 @@ impl SignalsReceiver {
         self.shared.wait_cv.notify_all();
         if let Some(handle) = self.shared.thread.lock().unwrap().take() {
             let _ = handle.join();
+        }
+        // A stopped receiver hears nothing: the PEP polls from now on.
+        #[cfg(feature = "pep")]
+        if let Some(pep) = &self.shared.pep {
+            pep.set_event_stream(crate::pep::EventStream::Down);
         }
     }
 
@@ -713,6 +726,16 @@ impl Shared {
             return flight.result.lock().unwrap().clone().unwrap_or_else(|| Err(fail("ssf", "the poll failed")));
         }
         let result = self.poll_now();
+        // The PEP's view of the stream follows the polls: down while they
+        // fail (it polls its own policies instead), and what the stream
+        // carries again once one succeeds.
+        #[cfg(feature = "pep")]
+        if let Some(pep) = &self.pep {
+            let state = if result.is_ok() { *self.pep_stream.lock().unwrap() } else { Some(crate::pep::EventStream::Down) };
+            if let Some(state) = state {
+                pep.set_event_stream(state);
+            }
+        }
         *flight.result.lock().unwrap() = Some(result.clone());
         *flight.done.lock().unwrap() = true;
         flight.cv.notify_all();

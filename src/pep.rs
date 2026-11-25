@@ -103,7 +103,10 @@ pub fn default_pdp_url(grant_endpoint: &str) -> String {
 ///   (`acct:<username>@<host>`). iya-sts builds it from the directory
 ///   username itself (`gnap/gnap_subject.ts`), whatever the client's
 ///   `subject_type`, so it is the most direct handle on the person.
-/// - `preferred_username` from the verified ID token assertion.
+/// - iya-sts's own `username` claim from the verified ID token assertion,
+///   on every ID token iya-sts issues.
+/// - `preferred_username` from the assertion, a `profile` claim there only
+///   when that scope was granted.
 /// - `sub` otherwise. iya-sts's `iss_sub` (and the ID token's `sub`) can be
 ///   pairwise for this client, which the PIP may not resolve; it is the
 ///   last resort, so a grant without `account` still has a subject.
@@ -120,7 +123,8 @@ pub fn subject_for(person: &Person) -> Subject {
     if !person.amr.is_empty() {
         properties.entry("amr").or_insert_with(|| Value::Array(person.amr.iter().cloned().map(Value::String).collect()));
     }
-    let id = [person.uid.as_deref(), person.preferred_username.as_deref()]
+    let username = person.claims.get("username").and_then(Value::as_str);
+    let id = [person.uid.as_deref(), username, person.preferred_username.as_deref()]
         .into_iter()
         .flatten()
         .find(|value| !value.is_empty())

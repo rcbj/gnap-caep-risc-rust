@@ -61,6 +61,10 @@ pub(super) struct Tx {
     /// Every PATCH body, and whether PATCH is refused (405).
     pub(super) patches: Vec<Value>,
     pub(super) refuse_patch: bool,
+    /// When not 0, every poll is answered with this status (a transmitter down).
+    pub(super) poll_status: u16,
+    /// How many polls arrived, answered or failed.
+    pub(super) polls: usize,
 }
 
 pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
@@ -77,6 +81,8 @@ pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, St
         authorization: String::new(),
         patches: Vec::new(),
         refuse_patch: false,
+        poll_status: 0,
+        polls: 0,
     }));
     let shared = state.clone();
     let handle = thread::spawn(move || {
@@ -154,6 +160,10 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
         return http_empty(204);
     }
     if path.starts_with("/ssf/poll/") {
+        tx.polls += 1;
+        if tx.poll_status != 0 {
+            return http(tx.poll_status, &json!({"error": "temporarily_unavailable"}).to_string());
+        }
         let parsed: Value = serde_json::from_str(if body.is_empty() { "{}" } else { body }).unwrap_or(json!({}));
         if let Some(ack) = parsed.get("ack").and_then(|v| v.as_array()) {
             for jti in ack {

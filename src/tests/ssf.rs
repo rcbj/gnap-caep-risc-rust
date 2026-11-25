@@ -65,9 +65,16 @@ pub(super) struct Tx {
     pub(super) poll_status: u16,
     /// How many polls arrived, answered or failed.
     pub(super) polls: usize,
+    /// Whether the metadata publishes add_subject_endpoint and
+    /// remove_subject_endpoint, every Add/Remove Subject call ("add" or
+    /// "remove", its body), and, when not 0, the status they are answered with.
+    pub(super) subject_endpoints: bool,
+    pub(super) subject_calls: Vec<(String, Value)>,
+    pub(super) subject_status: u16,
 }
 
 pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, String) {
+    warm_keys();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let base = format!("http://127.0.0.1:{port}");
@@ -83,6 +90,9 @@ pub(super) fn start_transmitter() -> (thread::JoinHandle<()>, Arc<Mutex<Tx>>, St
         refuse_patch: false,
         poll_status: 0,
         polls: 0,
+        subject_endpoints: false,
+        subject_calls: Vec::new(),
+        subject_status: 0,
     }));
     let shared = state.clone();
     let handle = thread::spawn(move || {
@@ -108,13 +118,26 @@ fn handle(state: &Mutex<Tx>, method: &str, path: &str, headers: &HashMap<String,
     }
     let base = tx.base.clone();
     if path == "/.well-known/ssf-configuration" {
-        return http(200, &json!({
+        let mut config = json!({
             "issuer": base,
             "jwks_uri": format!("{base}/jwks"),
             "configuration_endpoint": format!("{base}/ssf/stream"),
             "verification_endpoint": format!("{base}/ssf/verify"),
             "delivery_methods_supported": ["urn:ietf:rfc:8936"],
-        }).to_string());
+        });
+        if tx.subject_endpoints {
+            config["add_subject_endpoint"] = json!(format!("{base}/ssf/subjects:add"));
+            config["remove_subject_endpoint"] = json!(format!("{base}/ssf/subjects:remove"));
+        }
+        return http(200, &config.to_string());
+    }
+    if (path == "/ssf/subjects:add" || path == "/ssf/subjects:remove") && method == "POST" {
+        let kind = if path.ends_with("add") { "add" } else { "remove" };
+        tx.subject_calls.push((kind.to_string(), serde_json::from_str(body).unwrap_or(Value::Null)));
+        if tx.subject_status != 0 {
+            return http(tx.subject_status, &json!({"error": "forbidden", "error_description": "no active session"}).to_string());
+        }
+        return if kind == "add" { http(200, "") } else { http_empty(204) };
     }
     if path == "/jwks" {
         return http(200, &json!({"keys": [jwk(rsa_key(), "k1")]}).to_string());
@@ -363,5 +386,120 @@ fn polls_with_the_gnap_token_and_acknowledges() {
     let err = state.lock().unwrap().errs.get(&bad).cloned().unwrap();
     assert_eq!(err.get("err").and_then(|v| v.as_str()), Some("invalid_key"));
     receiver.verify(Some("abc")).unwrap();
+    receiver.stop();
+}
+
+/// The stub's signing key is a 2048-bit RSA key made on first use, which
+/// an unoptimised build under a parallel suite can take longer than the
+/// receiver's 15 s HTTP timeout to make while a `start` waits on `/jwks`.
+/// Made here first, in the test's own thread, it is ready before any request.
+fn warm_keys() {
+    let _ = (rsa_key(), other_key());
+}
+
+/// A receiver on the stub transmitter, its error lines collected.
+fn subject_receiver(base: String, add_subjects: bool) -> (SignalsReceiver, Arc<Mutex<Vec<String>>>) {
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let errors_cb = errors.clone();
+    let mut opt = ReceiverOpt::new(base, Arc::new(|_ids, _event| {}));
+    opt.poll_interval_ms = 60_000;
+    opt.add_subjects = add_subjects;
+    opt.on_error = Some(Arc::new(move |line| errors_cb.lock().unwrap().push(line.to_string())));
+    opt.headers = Some(Arc::new(|_m, _u, _b| vec![("authorization".into(), "GNAP app-token".into())]));
+    (SignalsReceiver::new(opt).unwrap(), errors)
+}
+
+fn sign_in(local_id: &str, person: &str) -> TrackedSession {
+    TrackedSession { local_id: local_id.into(), person: Some(person.into()), email: Some(format!("{person}@example.com")), idp_session: None, expires_at: None }
+}
+
+fn calls(state: &Mutex<Tx>) -> Vec<(String, String)> {
+    state.lock().unwrap().subject_calls.iter().map(|(kind, body)| (kind.clone(), body["subject"]["sub"].as_str().unwrap_or("").to_string())).collect()
+}
+
+#[test]
+fn a_persons_subject_is_added_at_the_first_sign_in_and_removed_after_the_last() {
+    let (_server, state, base) = start_transmitter();
+    state.lock().unwrap().subject_endpoints = true;
+    let (receiver, errors) = subject_receiver(base.clone(), true);
+    // Tracked before start: added by start, once the stream is known.
+    receiver.track(sign_in("g1", "alice"));
+    assert!(calls(&state).is_empty(), "no stream yet");
+    receiver.start().unwrap();
+    assert_eq!(calls(&state), vec![("add".to_string(), "alice".to_string())]);
+    let body = state.lock().unwrap().subject_calls[0].1.clone();
+    assert_eq!(body, json!({"stream_id": "s1", "subject": {"format": "iss_sub", "iss": base, "sub": "alice"}, "verified": true}), "the form events are matched in, as stream management authenticates");
+    assert_eq!(state.lock().unwrap().authorization, "GNAP app-token");
+    // A second sign-in of alice adds nothing; bob's is added.
+    receiver.track(sign_in("g2", "alice"));
+    receiver.track(sign_in("g3", "bob"));
+    assert_eq!(calls(&state).len(), 2);
+    // Re-tracking a sign-in (its grant rotated) neither adds nor removes.
+    receiver.track(sign_in("g1", "alice"));
+    assert_eq!(calls(&state).len(), 2);
+    // Alice's first sign-out: another remains, so she stays.
+    receiver.untrack("g1");
+    assert_eq!(calls(&state).len(), 2);
+    receiver.untrack("g2");
+    assert_eq!(calls(&state)[2], ("remove".to_string(), "alice".to_string()));
+    assert_eq!(state.lock().unwrap().subject_calls[2].1, json!({"stream_id": "s1", "subject": {"format": "iss_sub", "iss": base, "sub": "alice"}}));
+    receiver.untrack("g2");
+    receiver.untrack("nobody");
+    assert_eq!(calls(&state).len(), 3, "a sign-in already gone removes nothing again");
+    // An event that ends bob's last sign-in removes him, on the poll.
+    deliver(&state, Events::SESSION_REVOKED, json!({"format": "iss_sub", "iss": base, "sub": "bob"}), json!({}), rsa_key(), None, None);
+    receiver.poll_once().unwrap();
+    assert_eq!(calls(&state)[3], ("remove".to_string(), "bob".to_string()));
+    assert!(errors.lock().unwrap().is_empty(), "{:?}", errors.lock().unwrap());
+    receiver.stop();
+}
+
+#[test]
+fn a_refused_add_is_reported_once_and_fails_nothing() {
+    let (_server, state, base) = start_transmitter();
+    {
+        let mut tx = state.lock().unwrap();
+        tx.subject_endpoints = true;
+        tx.subject_status = 403;
+    }
+    let (receiver, errors) = subject_receiver(base, true);
+    receiver.start().unwrap();
+    receiver.track(sign_in("g1", "carol"));
+    assert_eq!(calls(&state), vec![("add".to_string(), "carol".to_string())], "asked once, not retried");
+    let lines = errors.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("Add Subject (iss_sub)") && lines[0].contains("answered 403"), "{lines:?}");
+    assert!(!lines[0].contains("carol"), "the person's identifier stays out of the line: {lines:?}");
+    // Never accepted, so never removed.
+    receiver.untrack("g1");
+    assert_eq!(calls(&state).len(), 1);
+    // A transmitter that is down: reported, and tracking goes on.
+    state.lock().unwrap().subject_status = 503;
+    receiver.track(sign_in("g2", "dave"));
+    assert_eq!(errors.lock().unwrap().len(), 2);
+    receiver.stop();
+}
+
+#[test]
+fn no_subject_calls_without_the_endpoints_or_with_the_switch_off() {
+    // The transmitter publishes no add_subject_endpoint.
+    let (_server, state, base) = start_transmitter();
+    let (receiver, errors) = subject_receiver(base, true);
+    receiver.start().unwrap();
+    receiver.track(sign_in("g1", "erin"));
+    receiver.untrack("g1");
+    assert!(calls(&state).is_empty());
+    assert!(errors.lock().unwrap().is_empty());
+    receiver.stop();
+    // ssf.addSubjects false: the endpoints are there and unused.
+    let (_server, state, base) = start_transmitter();
+    state.lock().unwrap().subject_endpoints = true;
+    let (receiver, _errors) = subject_receiver(base, false);
+    receiver.track(sign_in("g1", "frank"));
+    receiver.start().unwrap();
+    receiver.track(sign_in("g2", "grace"));
+    receiver.untrack("g1");
+    receiver.untrack("g2");
+    assert!(calls(&state).is_empty());
     receiver.stop();
 }

@@ -7,7 +7,7 @@ use crate::http::{self, TlsOpt};
 use crate::keys::verify_jwk;
 use crate::urlutil::well_known;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -282,6 +282,13 @@ pub struct ReceiverOpt {
     /// handler that panicked, and a stream update the transmitter refused.
     /// `None` prints them to standard output, as before.
     pub on_error: Option<Arc<ErrorFn>>,
+    /// Tell the transmitter which subjects this application cares about
+    /// (SSF 1.0 §8.1.3.2 and §8.1.3.3): Add Subject when `track` starts
+    /// following a person's first sign-in, Remove Subject when the last one
+    /// ends (`untrack`, or an event that ends it). Default `true`, from
+    /// `ssf.addSubjects`. Skipped when the transmitter publishes no
+    /// `add_subject_endpoint` (or `remove_subject_endpoint`, for removal).
+    pub add_subjects: bool,
     /// The client's embedded PEP (`client.pep().cloned()`; the `pep`
     /// feature). When it wants policy events (`local`, or `central` with a
     /// Permit cache), the receiver asks for `pep-policies-changed` and hands
@@ -303,6 +310,7 @@ impl ReceiverOpt {
             poll_interval_ms: 5000,
             max_events: 50,
             on_error: None,
+            add_subjects: true,
             #[cfg(feature = "pep")]
             pep: None,
         }
@@ -325,6 +333,9 @@ struct Inner {
     errs: Map<String, Value>,
     index: Index,
     handlers: HashMap<String, Vec<Arc<HandlerFn>>>,
+    /// The subjects the transmitter accepted from Add Subject (by
+    /// `subject_key`), so Remove Subject goes only for those.
+    added: HashSet<String>,
 }
 
 struct Flight {
@@ -344,6 +355,7 @@ struct Shared {
     interval: i64,
     max_events: i64,
     on_error: Option<Arc<ErrorFn>>,
+    add_subjects: bool,
     /// The PEP whose policy events this stream carries, told by `start`
     /// whether the stream does.
     #[cfg(feature = "pep")]
@@ -404,6 +416,7 @@ impl SignalsReceiver {
                 interval: opt.poll_interval_ms,
                 max_events: opt.max_events,
                 on_error: opt.on_error,
+                add_subjects: opt.add_subjects,
                 #[cfg(feature = "pep")]
                 pep: event_pep,
                 #[cfg(feature = "pep")]
@@ -417,6 +430,7 @@ impl SignalsReceiver {
                     errs: Map::new(),
                     index: Index { sessions: Vec::new(), max: 100_000 },
                     handlers,
+                    added: HashSet::new(),
                 }),
                 flight: Mutex::new(None),
                 running: AtomicBool::new(false),
@@ -438,12 +452,38 @@ impl SignalsReceiver {
         self.shared.inner.lock().unwrap().stream.clone()
     }
 
+    /// Follows a local sign-in. For a person the transmitter has not been
+    /// told of yet, this also calls Add Subject (`ReceiverOpt::add_subjects`)
+    /// inline, in the caller's thread; before `start` the call waits for
+    /// `start`, which makes it for every tracked person. A refusal (a 403 is
+    /// iya-sts#2234's "no active session" race) or a failure goes to
+    /// `on_error` and is not retried; the sign-in is never failed by it.
     pub fn track(&self, session: TrackedSession) {
-        self.shared.inner.lock().unwrap().index.add(session);
+        let replaced = {
+            let mut inner = self.shared.inner.lock().unwrap();
+            let replaced = inner.index.sessions.iter().find(|one| one.local_id == session.local_id).cloned();
+            inner.index.add(session.clone());
+            replaced
+        };
+        if let Some(old) = replaced {
+            self.shared.subject_gone(&old);
+        }
+        self.shared.subject_added(&session);
     }
 
+    /// Stops following a local sign-in. When it was the person's last one,
+    /// this also calls Remove Subject inline (for a subject the transmitter
+    /// accepted), reporting a refusal to `on_error`.
     pub fn untrack(&self, local_id: &str) {
-        self.shared.inner.lock().unwrap().index.remove(local_id);
+        let gone = {
+            let mut inner = self.shared.inner.lock().unwrap();
+            let gone = inner.index.sessions.iter().find(|one| one.local_id == local_id).cloned();
+            inner.index.remove(local_id);
+            gone
+        };
+        if let Some(gone) = gone {
+            self.shared.subject_gone(&gone);
+        }
     }
 
     pub fn on(&self, kind: &str, handler: Arc<HandlerFn>) {
@@ -480,6 +520,11 @@ impl SignalsReceiver {
         {
             let mut inner = self.shared.inner.lock().unwrap();
             inner.stream = Some(stream);
+        }
+        // The people tracked before the stream was known: Add Subject now.
+        let tracked: Vec<TrackedSession> = self.shared.inner.lock().unwrap().index.sessions.clone();
+        for session in &tracked {
+            self.shared.subject_added(session);
         }
         *self.shared.entered.lock().unwrap() = false;
         self.shared.running.store(true, Ordering::SeqCst);
@@ -877,9 +922,18 @@ impl Shared {
                     event.ended = false;
                 }
                 if event.ended {
-                    let mut inner = self.inner.lock().unwrap();
-                    for local_id in &sessions {
-                        inner.index.remove(local_id);
+                    let gone: Vec<TrackedSession> = {
+                        let mut inner = self.inner.lock().unwrap();
+                        let gone = inner.index.sessions.iter().filter(|one| sessions.contains(&one.local_id)).cloned().collect();
+                        for local_id in &sessions {
+                            inner.index.remove(local_id);
+                        }
+                        gone
+                    };
+                    // On the poll thread: Remove Subject for a person whose
+                    // last sign-in the event ended.
+                    for session in &gone {
+                        self.subject_gone(session);
                     }
                 }
             }
@@ -919,6 +973,86 @@ impl Shared {
             return inner.index.find(|session| session.email.as_deref() == Some(wanted.as_str()));
         }
         Vec::new()
+    }
+
+    /// The subject a tracked sign-in is followed by, in the form `handle`
+    /// matches events on: `iss_sub` with the transmitter's issuer when the
+    /// person's subject identifier is known, else `email`. `None` without
+    /// either, or before the transmitter's configuration is known.
+    fn subject_of_session(&self, session: &TrackedSession) -> Option<Value> {
+        let issuer = {
+            let inner = self.inner.lock().unwrap();
+            inner.config.as_ref().and_then(|cfg| cfg.get("issuer")).and_then(|v| v.as_str()).map(str::to_string)
+        };
+        if let Some(person) = session.person.as_deref().filter(|p| !p.is_empty()) {
+            let issuer = issuer?;
+            return Some(serde_json::json!({"format": "iss_sub", "iss": issuer, "sub": person}));
+        }
+        session.email.as_deref().filter(|e| !e.is_empty()).map(|email| serde_json::json!({"format": "email", "email": email.to_ascii_lowercase()}))
+    }
+
+    /// The endpoint (`add_subject_endpoint` or `remove_subject_endpoint`)
+    /// and the stream id, once `start` knows both.
+    fn subject_endpoint(&self, name: &str) -> Option<(String, String)> {
+        let inner = self.inner.lock().unwrap();
+        let endpoint = inner.config.as_ref()?.get(name)?.as_str()?.to_string();
+        let stream_id = inner.stream.as_ref()?.get("stream_id")?.as_str()?.to_string();
+        (!endpoint.is_empty()).then_some((endpoint, stream_id))
+    }
+
+    /// Add Subject for `session`'s person, unless the transmitter already
+    /// accepted that subject, the switch is off, or there is no endpoint.
+    fn subject_added(&self, session: &TrackedSession) {
+        if !self.add_subjects {
+            return;
+        }
+        let Some((endpoint, stream_id)) = self.subject_endpoint("add_subject_endpoint") else { return };
+        let Some(subject) = self.subject_of_session(session) else { return };
+        let key = subject.to_string();
+        if self.inner.lock().unwrap().added.contains(&key) {
+            return;
+        }
+        let format = subject["format"].as_str().unwrap_or("").to_string();
+        let body = serde_json::json!({"stream_id": stream_id, "subject": subject, "verified": true});
+        match self.call("POST", &endpoint, Some(&body)) {
+            Ok((200 | 201 | 204, _)) => {
+                self.inner.lock().unwrap().added.insert(key);
+            }
+            // The person's identifier stays out of the line.
+            Ok((status, parsed)) => self.report(&format!("ssf: Add Subject ({format}) for a signed-in person on stream {stream_id} answered {status}: {}", clip(&parsed))),
+            Err(err) => self.report(&format!("ssf: Add Subject ({format}) for a signed-in person on stream {stream_id} failed: {err}")),
+        }
+    }
+
+    /// Remove Subject for `session`'s person when no tracked sign-in of
+    /// theirs remains and the transmitter had accepted the subject.
+    fn subject_gone(&self, session: &TrackedSession) {
+        if !self.add_subjects {
+            return;
+        }
+        let Some(subject) = self.subject_of_session(session) else { return };
+        let key = subject.to_string();
+        let remaining = {
+            let inner = self.inner.lock().unwrap();
+            if !inner.added.contains(&key) {
+                return;
+            }
+            inner.index.sessions.clone()
+        };
+        if remaining.iter().any(|other| self.subject_of_session(other).map(|s| s.to_string()).as_deref() == Some(key.as_str())) {
+            return;
+        }
+        if !self.inner.lock().unwrap().added.remove(&key) {
+            return;
+        }
+        let Some((endpoint, stream_id)) = self.subject_endpoint("remove_subject_endpoint") else { return };
+        let format = subject["format"].as_str().unwrap_or("").to_string();
+        let body = serde_json::json!({"stream_id": stream_id, "subject": subject});
+        match self.call("POST", &endpoint, Some(&body)) {
+            Ok((200 | 204, _)) => {}
+            Ok((status, parsed)) => self.report(&format!("ssf: Remove Subject ({format}) for a signed-out person on stream {stream_id} answered {status}: {}", clip(&parsed))),
+            Err(err) => self.report(&format!("ssf: Remove Subject ({format}) for a signed-out person on stream {stream_id} failed: {err}")),
+        }
     }
 
     fn call(&self, method: &str, url: &str, body: Option<&Value>) -> Result<(u16, Value), Error> {

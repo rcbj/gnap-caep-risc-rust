@@ -161,10 +161,12 @@ let client = Client::from_file("gnap.json")?; // registers the PEP and, in local
 
 // After the grant is approved (and `ensure_fresh` if the token may have expired):
 let access = Access::new("read", "order", order_id);
-match client.decide_grant(&grant, &access) {
+let decision = client.decide_grant(&grant, &access);
+let status = decision.http_status(); // 200 for a Permit, 403 for anything else
+match decision {
     Decision::Permit { obligations, .. } => serve(obligations),
-    Decision::Deny { why } => forbidden(&why),          // 403
-    Decision::Unavailable { why } => forbidden(&why),   // 403: fail closed
+    Decision::Deny { why } => forbidden(status, &why),          // 403
+    Decision::Unavailable { why } => forbidden(status, &why),   // 403: fail closed
 }
 // For a Person you hold yourself: client.decide(&person, &access)
 ```

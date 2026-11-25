@@ -256,21 +256,18 @@ impl Demo {
             return self.not_configured(&session);
         };
         let action = if method == "GET" { "read" } else { "write" };
-        match client.decide_grant(&session.grant, &Access::new(action, "order", id)) {
+        let decision = client.decide_grant(&session.grant, &Access::new(action, "order", id));
+        // 200 for a Permit, 403 for anything else: the PEP's own answer.
+        let status = decision.http_status();
+        let (title, body) = match decision {
             Decision::Permit { obligations, .. } => {
                 let note = if obligations.is_empty() { String::new() } else { format!("<p><small>{} obligation(s) to discharge.</small></p>", obligations.len()) };
-                let body = format!("<h1>Order {}</h1><p>The PEP permitted <code>{action}</code>.</p>{note}", escape(id));
-                self.html_for(200, "Order", &body, Vec::new(), Some(&session))
+                ("Order", format!("<h1>Order {}</h1><p>The PEP permitted <code>{action}</code>.</p>{note}", escape(id)))
             }
-            Decision::Deny { why } => {
-                let body = format!("<h1>Not allowed</h1><p>The PEP denied <code>{action}</code> on order {}: {}</p>", escape(id), escape(&why));
-                self.html_for(403, "Forbidden", &body, Vec::new(), Some(&session))
-            }
-            Decision::Unavailable { why } => {
-                let body = format!("<h1>No decision</h1><p>The PEP could not decide: {}</p>", escape(&why));
-                self.html_for(403, "Forbidden", &body, Vec::new(), Some(&session))
-            }
-        }
+            Decision::Deny { why } => ("Forbidden", format!("<h1>Not allowed</h1><p>The PEP denied <code>{action}</code> on order {}: {}</p>", escape(id), escape(&why))),
+            Decision::Unavailable { why } => ("Forbidden", format!("<h1>No decision</h1><p>The PEP could not decide: {}</p>", escape(&why))),
+        };
+        self.html_for(status, title, &body, Vec::new(), Some(&session))
     }
 
     /// `/attribute-protected`: decided by the embedded PEP against the demo
@@ -291,10 +288,13 @@ impl Demo {
             return self.not_configured(&session);
         };
         let what = "<p><small>The demo application's policy permits <code>read</code> on <code>attribute-protected</code> when your directory attribute <code>attr1</code> is <code>abc123</code>. The PEP asked iya-sts's PIP for it: it is not in your grant or its ID token assertion.</small></p>";
-        let (status, title, body) = match client.decide_grant(&session.grant, &Access::new("read", "attribute-protected", "attr1")) {
-            Decision::Permit { .. } => (200, "Attribute-protected", format!("<h1>Allowed</h1><p class=\"notice\">The PEP permitted it: your <code>attr1</code> is <code>abc123</code>.</p>{what}")),
-            Decision::Deny { why } => (403, "Forbidden", format!("<h1>Not allowed</h1><p class=\"problem\">The PEP denied it: {}</p>{what}", escape(&why))),
-            Decision::Unavailable { why } => (403, "Forbidden", format!("<h1>No decision</h1><p class=\"problem\">The PEP could not decide: {}</p>{what}", escape(&why))),
+        let decision = client.decide_grant(&session.grant, &Access::new("read", "attribute-protected", "attr1"));
+        // 200 for a Permit, 403 for anything else: the PEP's own answer.
+        let status = decision.http_status();
+        let (title, body) = match decision {
+            Decision::Permit { .. } => ("Attribute-protected", format!("<h1>Allowed</h1><p class=\"notice\">The PEP permitted it: your <code>attr1</code> is <code>abc123</code>.</p>{what}")),
+            Decision::Deny { why } => ("Forbidden", format!("<h1>Not allowed</h1><p class=\"problem\">The PEP denied it: {}</p>{what}", escape(&why))),
+            Decision::Unavailable { why } => ("Forbidden", format!("<h1>No decision</h1><p class=\"problem\">The PEP could not decide: {}</p>{what}", escape(&why))),
         };
         self.html_for(status, title, &body, Vec::new(), Some(&session))
     }

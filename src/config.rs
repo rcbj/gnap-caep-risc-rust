@@ -19,6 +19,10 @@ pub struct Display {
 pub struct SsfConfig {
     pub transmitter: String,
     pub poll_interval_ms: i64,
+    /// `ssf.addSubjects` (default `true`): the receiver tells the
+    /// transmitter, by Add Subject and Remove Subject, which people are
+    /// signed in here (`ReceiverOpt::add_subjects`).
+    pub add_subjects: bool,
 }
 
 pub struct Config {
@@ -145,7 +149,11 @@ pub fn resolve(raw: &Value, base_dir: &Path) -> Result<Config, Error> {
             return Err(fail("config", "ssf.transmitter must be an http(s) URL"));
         } else {
             let interval = raw_ssf.and_then(|ssf| ssf.get("pollIntervalMs")).and_then(as_f64).unwrap_or(0.0) as i64;
-            Some(SsfConfig { transmitter, poll_interval_ms: interval })
+            let add_subjects = match raw_ssf.and_then(|ssf| ssf.get("addSubjects")) {
+                None | Some(Value::Null) => true,
+                Some(value) => as_bool(value).ok_or_else(|| fail("config", "ssf.addSubjects must be true or false"))?,
+            };
+            Some(SsfConfig { transmitter, poll_interval_ms: interval, add_subjects })
         }
     };
     let pep_section = doc.get("pep").filter(|value| !value.is_null());

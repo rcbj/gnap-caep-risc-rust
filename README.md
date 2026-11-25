@@ -36,6 +36,19 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 
 `ssf.pollIntervalMs` is the poll interval in milliseconds. `SignalsReceiver::stop` waits until the background poll has finished.
 
+### Subjects: only the people signed in here
+
+The receiver tells the transmitter which people it cares about (SSF 1.0 §8.1.3.2 and §8.1.3.3). The application then receives events only about people signed in to it, even from a transmitter whose `default_subjects` is `NONE`. iya-sts (rcbj/iya-sts#2234) also sends an application's stream events only about people with an active session or grant there.
+
+- **Sign-in:** `SignalsReceiver::track` calls Add Subject (`add_subject_endpoint` from the transmitter's metadata) for a person it was not following yet. The subject is in the form events are matched on: `iss_sub` with the transmitter's issuer, or `email` when there is no subject identifier. The call is authenticated as stream management is. A person tracked before `start` is added by `start`.
+- **Sign-out:** `untrack` (local sign-out or revoke), or an event that ends a sign-in, calls Remove Subject. It does so only when no other tracked sign-in of that person remains, and only for a subject the transmitter accepted.
+- **Failures:** a refusal or failure goes to `ReceiverOpt::on_error` once, without the person's identifier, and is not retried. A 403 is iya-sts#2234's race, a person with no active session yet. A sign-in never fails because of it.
+- **Threads:** there is no timer. The calls run inline: in `track`'s or `untrack`'s caller, in `start`, and on the poll thread for an event that ends a sign-in.
+- **Turning it off:** `ssf.addSubjects: false` (default `true`; `ReceiverOpt::add_subjects`) turns it off. A transmitter without the endpoints is not called, and with `signals: false` there is no receiver.
+- **The PEP's events:** with an embedded PEP that wants policy events, `start` also adds the application, `{format: opaque, id: <application>}`, first and never removes it. A stream that names people carries only events about them, and `pep-policies-changed` is about the application (the `application` member of its subject).
+- **Expired sign-ins:** a tracked sign-in that expires without being untracked keeps its person subscribed until another of their sign-ins ends.
+- **The demo:** it tracks every sign-in, not only the first.
+
 ## Embedded PEP (features `pep` and `local`)
 
 Ask iya-sts's authorization policy whether a signed-in person may act on a resource, through the embedded Remote PEP (the shared [`iya-pep`](https://github.com/rcbj/iya-pep-rust) crate; iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)). **[docs/remote-pep.md](docs/remote-pep.md) is the full guide**: setting up iya-sts, choosing `central` or `local`, every configuration member, obligations, policy-change events, operating it and troubleshooting.

@@ -82,6 +82,16 @@ The demo source is `src/bin/demo.rs`, ported from oidc-caep-risc-rust's feature/
 
 ## Signals
 
+Subjects (#43): `ReceiverOpt::add_subjects` / `ssf.addSubjects` (default true, refused unless boolean) makes the receiver tell the transmitter who is signed in, so a stream carries only those people (the owner's rule; iya-sts#2234; correct also against `default_subjects: NONE`).
+- `track` calls Add Subject (`add_subject_endpoint`, body `stream_id`, `subject`, `verified: true`) for a person not yet accepted. The subject is `iss_sub` with the transmitter's `issuer`, else `email`. Before `start`, `start` adds every tracked person.
+- `untrack`, and an event that ends a sign-in (on the poll thread), call Remove Subject when no other tracked sign-in maps to the same subject and the subject is in `Inner.added`. Re-tracking a `local_id` neither adds nor removes.
+- The calls are inline (no timer). A refusal or failure is reported once to `on_error` with only the subject format, never retried, never fatal. No endpoint, no call.
+- A receiver whose PEP wants events (`Shared.pep`) adds `{format: opaque, id: pep.config().application}` at `start`, before the tracked people, and never removes it. iya-sts narrows a stream that names subjects to those subjects, and `pep-policies-changed`'s subject is complex with that `application` member (iya-sts `applicationSubject()`; GNAP's scope lets it through, #2028). Without it the first sign-in cut the local PEP off from its events (found live by wsfed-caep-rust, 5257f07). `a_receiver_adding_subjects_names_the_application_its_pep_hears_about` holds it. Live `--pep` against `iya-sts:local` after this: the flip came `via: event` in 1.1 s.
+- An expired session dropped by `Index::find` is not removed at the transmitter.
+- Tests: `src/tests/ssf.rs` (`subject_endpoints`, `subject_calls`, `subject_status` on the stub transmitter) and `add_subjects_defaults_on_and_takes_only_a_boolean`.
+- `start_transmitter` makes the stub's RSA keys first (`warm_keys`): generating them lazily under a parallel debug suite took longer than the receiver's 15 s timeout on `/jwks`.
+- The demo tracks every sign-in (`watch` tracks into a running receiver; before #43 only the first was tracked).
+
 Omitted or `true` keeps CAEP and RISC on, and the resolved configuration omits `signals`. `false` does not start the receiver, does not require transmitter metadata, drops `ssf.read` and `ssf.manage`, and is kept on the resolved configuration. Anything else returns `signals must be true or false`. `SignalsReceiver::stop` waits until the background poll has finished.
 
 ## License

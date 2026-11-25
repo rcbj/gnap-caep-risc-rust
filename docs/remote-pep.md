@@ -110,6 +110,25 @@ Every change to that policy, or to which policy is the root, is sent to a `local
 
 If the application's entry restricts its Shared Signals streams with `ssfAllowedEvents`, add `urn:iya:sts:secevent:event-type:pep-policies-changed` to it. Otherwise the PEP doesn't hear of a change until its fallback poll, and the application's page in the console warns about it.
 
+## Credentials
+
+The application's own credentials (the client instance key and the GNAP tokens), the install-time admin secret, the trust material and the development/product differences are in the README's [Credentials](../README.md#credentials). The PEP's are these:
+
+- **Identity.** The PEP is a service account of its own (step 2): no password (`credential: none`), in `remote-peps`, bound to one application. It is never a person, and never the application.
+- **The PEP key** (`pep.assertionKey`, relative to the configuration's directory):
+  - **Type.** EC P-256, or RSA of 2048 bits or more.
+  - **Made where it runs.** Only its certificate request leaves the machine (step 3), and the file should be readable by the application's user only. The demo's install script writes `generated/pep-key.pem` 0600 with `openssl`, never prints it, and `.dockerignore` keeps it out of the image.
+  - **Registered by `issue-pep-credential`.** That call certifies the request, registers the key for the PEP's entry, and binds the PEP to the application.
+- **What the key authenticates.** Each call the PEP makes starts from an RFC 7523 JWT assertion, signed with this key (`iss` and `sub` are the PEP's `name`), sent to the realm's `/oauth2/token` as client `clientId` (default `sts-remote-pep`). The answer is a DPoP-bound (RFC 9449) access token, and every call carries a DPoP proof signed with the same key. There is one token per audience:
+  - `xacml:pep`: registration, heartbeat, catalogue and policy pulls, and `POST /xacml/pip`.
+  - `xacml:pep-audit`: decision records.
+  - `authzen:evaluate`: `central` evaluations.
+
+  Tokens are renewed 30 s before they expire and are never logged. Without a token the call is not made, and a decision that needed it is `Unavailable` (a 403).
+- **It must not be the client instance key.** The library compares JWK thumbprints and refuses the configuration: `pep.assertionKey is the GNAP client instance key (privateKey); the PEP needs a key of its own`. The client instance key proves the application's GNAP requests and holds its grants; the PEP key proves a different principal with its own entry, group and binding. One key for both would make each usable as the other, and a rotation or compromise of either would hit both.
+- **Rotation.** Make a new key, have it certified with `issue-pep-credential`, and replace the file. The PEP reads the file again when it changes, and a changed key drops every token it held. For the demo, delete `demo/generated/pep-key.pem` and run `configure_iya_sts.py --pep` again: it makes and certifies a new key and keeps the account.
+- **Trust.** The PEP verifies iya-sts with `pep.tlsCa`, by default the library's `tlsCa`.
+
 ## Build with the feature
 
 ```toml

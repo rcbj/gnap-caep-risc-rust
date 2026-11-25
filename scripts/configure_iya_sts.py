@@ -773,6 +773,85 @@ def container_port(cwd=None):
     return None
 
 
+def mtls_trust_is_pki(api):
+    """Whether this realm checks a GNAP client's TLS certificate by PKI: the
+    `gnap.mtlsTrust` setting is `pki`, or `auto` in product mode (product's
+    `auto` is `pki`, development's `pinned`). Under PKI a self-signed
+    certificate is refused (STS-GNAP-0287): it must chain to the realm's
+    client truststore and be bound to the application."""
+    gnap = api("/gnap", None, "GET")["body"]
+    value = "auto"
+    for group in (gnap.get("settings") or {}).get("groups") or []:
+        for setting in group.get("settings") or []:
+            if setting.get("key") == "gnap.mtlsTrust":
+                value = str(setting.get("value") or "auto")
+    if value == "pki":
+        return True
+    if value != "auto":
+        return False
+    return str(api("/mode", None, "GET")["body"].get("mode") or "") == "product"
+
+
+def _self_signed(cert_path):
+    """Whether the first certificate in the file names itself as its issuer."""
+    out = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-subject", "-issuer", "-nameopt", "RFC2253"],
+                         capture_output=True, text=True, check=False)
+    lines = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+    return out.returncode == 0 and lines.get("subject", "").strip() == lines.get("issuer", "").strip()
+
+
+def issue_client_certificate(api, files, config_path):
+    """Under the PKI trust model, has the realm issue the GNAP client its TLS
+    client certificate (`issue-tls-client-certificate`: the realm's
+    tls-client Issuing CA, urn:sts:application:<id>, bound to the entry), puts
+    the key and certificate where the configuration names them (the key
+    0600, decrypted with openssl from the one-time encrypted PEM, never
+    printed), and registers that key as the application's gnapKey. A
+    certificate the realm already issued is kept. Answers whether a new one
+    was issued."""
+    import secrets
+    config_dir = Path(config_path).resolve().parent
+    def path_of(value):
+        value = str(value or "")
+        value = value[5:] if value.startswith("file:") else value
+        return str((config_dir / value).resolve())
+    raw = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    key_path, cert_path = path_of(raw.get("privateKey")), path_of(raw.get("certificate"))
+    if os.path.exists(cert_path) and not _self_signed(cert_path):
+        print("The GNAP client certificate is one the realm issued; kept.")
+        return False
+    password = secrets.token_urlsafe(24)
+    answered = api("/applications/issue-tls-client-certificate", {
+        "application": files["application"], "password": password, "keyAlg": "ec-p256", "label": "gnap demo client",
+    })
+    body = answered["body"]
+    if not body.get("ok"):
+        raise RuntimeError(f"issuing {files['application']} a TLS client certificate was refused: {json.dumps({k: v for k, v in body.items() if k != 'files'})[:400]}")
+    encrypted = ((body.get("files") or {}).get("key") or {}).get("text") or ""
+    issued = body.get("certificate") or body.get("issued") or {}
+    leaf = issued.get("certificatePem") or ""
+    chain = issued.get("chainPem") or []
+    if not encrypted or not leaf:
+        raise RuntimeError("the issued certificate's answer carried no key or certificate")
+    Path(key_path).parent.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, GNAP_CLIENT_KEY_PASSWORD=password)
+    descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(descriptor)
+    done = subprocess.run(["openssl", "pkey", "-passin", "env:GNAP_CLIENT_KEY_PASSWORD", "-out", key_path],
+                          input=encrypted, capture_output=True, text=True, env=env, check=False)
+    if done.returncode != 0:
+        raise RuntimeError(f"the issued key could not be opened: {done.stderr.strip()[:200]}")
+    os.chmod(key_path, 0o600)
+    pems = [leaf] + [pem for pem in (chain if isinstance(chain, list) else [chain]) if pem and pem.strip() != leaf.strip()]
+    Path(cert_path).write_text("".join(pem if pem.endswith("\n") else pem + "\n" for pem in pems), encoding="utf-8")
+    set_key = api("/applications/set", {"application": files["application"], "attribute": "gnapKey", "value": key_json_of(config_path)})
+    if not set_key["body"].get("ok"):
+        raise RuntimeError(f"registering the issued key as gnapKey was refused: {json.dumps(set_key['body'])[:300]}")
+    print(f"Issued {files['application']} a TLS client certificate from the realm's CA (this realm checks GNAP mTLS by PKI);")
+    print(f"  wrote {key_path} (0600) and {cert_path}, and registered the key as gnapKey.")
+    return True
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(argv)
@@ -857,6 +936,8 @@ def main(argv=None):
                 raise RuntimeError(f"{call['why']}: refused: {json.dumps(added['body'])[:400]}")
     else:
         raise RuntimeError(f"iya-sts refused to create {files['application']}: {json.dumps(created['body'])[:500]}")
+    if files["keyProof"] == "mtls" and mtls_trust_is_pki(api):
+        issue_client_certificate(api, files, args["config"])
     for call in plan:
         if call["when"] != "always":
             continue

@@ -588,8 +588,55 @@ def wait_for(driver, predicate, what):
 # --pep: the demo with its embedded PEP (#39). The install script sets the PEP
 # up (--pep central), exactly as a user does; its names come from there.
 sys.path.insert(0, str(ROOT / "scripts"))
-from configure_iya_sts import PEP_EVENT, PEP_KEY, orders_policy  # noqa: E402
+from configure_iya_sts import (  # noqa: E402
+    PEP_EVENT, PEP_KEY, SSF_ROLES, TEST_ATTRIBUTE, orders_policy, user_attributes,
+)
 PEP_LOCAL_CONFIG = "gnap.pep-local.json"
+# The second test user (#41): signed in like the first, but its attr1 is not
+# abc123, so the demo's policy refuses it GET /attribute-protected.
+DENIED_USER = "gnap-demo-denied"
+DENIED_VALUE = "not-abc123"
+# What the unit tests' local PEP holds (src/bin/demo.rs's `protected`): the
+# XACML iya-sts stores for the install script's orders_policy() ALFA. The
+# --pep run compares it with what iya-sts stored.
+POLICY_FIXTURE = ROOT / "src" / "tests" / "demo_orders_policy.xml"
+
+
+def add_denied_user(client, sts_origin, token, password):
+    """The denied test user: created with `password` (never printed), in the
+    groups the first user is in, with attr1=not-abc123. The install script
+    defined attr1 before this runs."""
+    admin_ok(client, sts_origin, token, "/admin-api/users/create", {
+        "username": DENIED_USER, "invent": False, "credential": "password",
+        "password": password, "passwordConfirm": password, "attributes": user_attributes(DENIED_USER),
+    }, f"the denied test user {DENIED_USER}")
+    for role in SSF_ROLES:
+        admin_ok(client, sts_origin, token, "/admin-api/groups/add-member",
+                 {"group": role["group"], "member": DENIED_USER}, f"{DENIED_USER} in {role['group']}")
+    admin_ok(client, sts_origin, token, "/admin-api/users/set-attribute",
+             {"user": DENIED_USER, "attribute": TEST_ATTRIBUTE, "value": DENIED_VALUE},
+             f"{DENIED_USER} has {TEST_ATTRIBUTE}={DENIED_VALUE}")
+
+
+def own_policy_name(client, sts_origin, token, application):
+    status, page = admin_json(client, sts_origin, token, "GET",
+                              "/admin-api/applications?application=" + urllib.parse.quote(application, safe=""))
+    fga = ((page.get("page") or {}).get("fga") or {}) if status == 200 else {}
+    name = (fga.get("policy") or {}).get("name") or fga.get("reference")
+    if not name:
+        raise RuntimeError(f"{application}'s page names no policy of its own: {json.dumps(fga)[:400]}")
+    return name
+
+
+def policy_matches_fixture(client, sts_origin, token, application):
+    """Whether iya-sts stored, for the install script's ALFA, exactly the
+    XACML the unit tests' PEP holds. A difference prints iya-sts's document
+    (a policy, no secret) so the fixture can be brought in line."""
+    stored = stored_xacml(client, sts_origin, token, own_policy_name(client, sts_origin, token, application))
+    fixture = POLICY_FIXTURE.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    if stored != fixture:
+        print(f"iya-sts stored other XACML than {POLICY_FIXTURE.relative_to(ROOT)}:\n" + "\n".join(stored), flush=True)
+    return stored == fixture
 
 
 def admin_ok(client, sts_origin, token, path, body, what):
@@ -603,12 +650,7 @@ def admin_ok(client, sts_origin, token, path, body, what):
 def flip_policy(client, sts_origin, token, application):
     """The application's OWN policy (the install script's) now denies read
     too. The realm root is never touched."""
-    status, page = admin_json(client, sts_origin, token, "GET",
-                              "/admin-api/applications?application=" + urllib.parse.quote(application, safe=""))
-    fga = ((page.get("page") or {}).get("fga") or {}) if status == 200 else {}
-    name = (fga.get("policy") or {}).get("name") or fga.get("reference")
-    if not name:
-        raise RuntimeError(f"{application}'s page names no policy of its own: {json.dumps(fga)[:400]}")
+    name = own_policy_name(client, sts_origin, token, application)
     admin_ok(client, sts_origin, token, "/admin-api/xacml/import-alfa",
              {"name": name, "alfa": orders_policy("gnapdemolocked", "deny")}, f"{name} now denies read on order")
 
@@ -622,19 +664,26 @@ def local_copy(config, dest):
     dest.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
 
 
-def order(driver, method):
-    status, _headers, payload = driver.client.request(method, driver.demo_origin + "/orders/42",
+def protected_page(driver, method, path):
+    status, _headers, payload = driver.client.request(method, driver.demo_origin + path,
                                                       body=b"" if method == "POST" else None, headers={"accept": "text/html"})
-    print(f"{method} {status} demo /orders/42", flush=True)
+    print(f"{method} {status} demo {path} as {driver.username}", flush=True)
     return status, payload
+
+
+def order(driver, method):
+    return protected_page(driver, method, "/orders/42")
 
 
 def pep_state(driver):
     return driver.status().get("pep") or {}
 
 
-def pep_checks(driver, mode):
-    """GET is read (Permit, 200) and POST is write (Deny, 403)."""
+def pep_checks(driver, mode, denied=None):
+    """GET /orders/42 is read (Permit, 200) and POST is write (Deny, 403);
+    GET /attribute-protected is 200 for the allowed user (attr1=abc123) and
+    403 for the `denied` one (attr1=not-abc123), whose GET /orders/42 is
+    still 200 (it has an acr)."""
     deadline = time.time() + 60
     state = {}
     while time.time() < deadline:
@@ -646,13 +695,29 @@ def pep_checks(driver, mode):
         raise RuntimeError(f"the {mode} PEP did not get ready: {json.dumps(state)[:600]}")
     read_status, read_body = order(driver, "GET")
     write_status, write_body = order(driver, "POST")
+    attr_status, attr_body = protected_page(driver, "GET", "/attribute-protected")
     checks = {"mode": state.get("mode"), "registered": bool(state.get("registered")),
-              "readIs200": read_status == 200, "writeIs403": write_status == 403}
+              "readIs200": read_status == 200, "writeIs403": write_status == 403,
+              "attributeProtected": {"allowedUser": attr_status}}
     if mode == "local":
         checks["policyCount"] = state.get("policyCount")
     if read_status != 200 or write_status != 403:
         why = (read_body if read_status != 200 else write_body)[:400].decode("utf-8", "replace")
         raise RuntimeError(f"{mode}: GET /orders/42 answered {read_status}, POST {write_status}: {why}; pep {json.dumps(pep_state(driver))[:600]}")
+    failures = []
+    if attr_status != 200 or b"The PEP permitted it" not in attr_body:
+        failures.append(f"GET /attribute-protected answered {attr_status} for {driver.username}: {attr_body[:400].decode('utf-8', 'replace')}")
+    if denied is not None:
+        denied_status, denied_body = protected_page(denied, "GET", "/attribute-protected")
+        denied_read, _ = order(denied, "GET")
+        checks["attributeProtected"]["deniedUser"] = denied_status
+        checks["deniedUserReadIs200"] = denied_read == 200
+        if denied_status != 403 or b"The PEP denied it" not in denied_body:
+            failures.append(f"GET /attribute-protected answered {denied_status} for {denied.username}: {denied_body[:400].decode('utf-8', 'replace')}")
+        if denied_read != 200:
+            failures.append(f"GET /orders/42 answered {denied_read} for {denied.username}")
+    if failures:
+        raise RuntimeError(f"{mode}: " + "; ".join(failures) + f"; pep {json.dumps(pep_state(driver))[:600]}")
     return checks
 
 
@@ -733,7 +798,8 @@ def as_me():
 
 
 def configure_demo(tools_image, work, sts_origin, demo_origin, demo_port, username, password, secret, pep=False):
-    """Generate the client key and register the demo, both in the tools image. Nothing runs on the host."""
+    """Generate the client key and register the demo, both in the tools image. Nothing runs on the host.
+    `pep` is False, or the install script's --pep mode ("central" when True)."""
     config = "/work/gnap.json"
     base = ["run", "--rm", "--network", "host", *as_me(), "-v", f"{work}:/work"]
     docker(*base, tools_image, *PROFILE["generate_key"])
@@ -754,7 +820,7 @@ def configure_demo(tools_image, work, sts_origin, demo_origin, demo_port, userna
             "--idp", sts_origin,
             "--public-url", demo_origin,
             "--test-user", username,
-            *(["--pep", "central"] if pep else []),
+            *(["--pep", "central" if pep is True else pep] if pep else []),
         ],
         env=env,
         capture_output=True,
@@ -807,6 +873,7 @@ def main():
         raise SystemExit("LIVE_STS_PORT and LIVE_DEMO_PORT must not bind 3000, 8081, or 18481 to 18495")
     secret = os.environ.get("ADMIN_API_CLIENT_SECRET") or os.environ.get("STS_ADMIN_API_CLIENT_SECRET") or secrets.token_urlsafe(24)
     password = os.environ.get(PROFILE["user_env"]) or secrets.token_urlsafe(18)
+    denied_password = secrets.token_urlsafe(18)
     username = PROFILE["test_user"]
     sts_origin, sts_name = prepare_sts(sts_port, secret)
     demo_origin = f"http://127.0.0.1:{demo_port}"
@@ -861,6 +928,10 @@ def main():
             mounts.append((pep_key, "/app/demo/" + PEP_KEY))
         start_demo(image, demo_name, demo_port, demo_origin, mounts)
         client = Client(chain_file)
+        if pep:
+            token = mint_admin(client, sts_origin, secret)
+            add_denied_user(client, sts_origin, token, denied_password)
+            pep_result["storedXacmlIsTheUnitFixture"] = policy_matches_fixture(client, sts_origin, token, application)
         driver = Driver(client, sts_origin, demo_origin, username, password)
         driver.sign_in()
         signed_in = wait_for(
@@ -870,7 +941,9 @@ def main():
         )
         print(f"signed in as {signed_in.get('subject')}; {signed_in.get('receiver')}", flush=True)
         if pep:
-            central = pep_checks(driver, "central")
+            denied = Driver(Client(chain_file), sts_origin, demo_origin, DENIED_USER, denied_password)
+            denied.sign_in()
+            central = pep_checks(driver, "central", denied)
         token = mint_admin(client, sts_origin, secret)
         session_id = session_id_for(client, sts_origin, token, username)
         emit(client, sts_origin, token, session_id, "credential-change")
@@ -907,12 +980,19 @@ def main():
             local_driver.sign_in()
             wait_for(local_driver, lambda row: row.get("signedIn") is True and "polling" in str(row.get("receiver") or ""),
                      "a signed-in local-mode demo polling its stream")
-            local = pep_checks(local_driver, "local")
+            local_denied = Driver(Client(chain_file), sts_origin, demo_origin, DENIED_USER, denied_password)
+            local_denied.sign_in()
+            local = pep_checks(local_driver, "local", local_denied)
             token = mint_admin(client, sts_origin, secret)
             local["policyChange"] = flip_check(local_driver, client, sts_origin, token, application)
             pep_result["local"] = local
             result["pep"] = pep_result
+            # The unit tests' policy must be what iya-sts stores; reported
+            # after everything else ran, and the run fails on a difference.
+            result["ok"] = pep_result["storedXacmlIsTheUnitFixture"]
         print(json.dumps(result, indent=2))
+        if not result["ok"]:
+            raise RuntimeError(f"iya-sts stored other XACML than {POLICY_FIXTURE.relative_to(ROOT)} (printed above)")
     finally:
         if os.environ.get("LIVE_KEEP", "") == "1":
             # For a failure's post-mortem: both containers stay. The next run

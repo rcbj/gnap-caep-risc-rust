@@ -34,6 +34,57 @@ let done = client.finish_redirect(query, &[started.pending.as_ref().unwrap().id.
 
 `ssf.pollIntervalMs` is the poll interval in milliseconds. `SignalsReceiver::stop` waits until the background poll has finished.
 
+## Credentials
+
+Every credential the library, its demo and its embedded PEP hold, who makes each one, and what it proves. No value of any of them is in this repository, in the demo image, or in a log line. The demo keeps its key material in `demo/generated/`, which `.gitignore` and `.dockerignore` keep out (only the public `tlsCa` chain enters the image).
+
+### The application's own credentials
+
+| Credential | Type | Made or issued by | Where it lives | Used for | How iya-sts knows it | Rotation |
+|---|---|---|---|---|---|---|
+| **Client instance key** and its certificate | EC P-256 (ES256) in the demo; the library also loads RSA keys | Development: you, with `openssl` (a self-signed certificate; `scripts/live_iya_sts.py` makes one the same way). Product: the realm's TLS client Issuing CA, through `POST /admin-api/applications/issue-tls-client-certificate`, which the install script calls (below) | `privateKey` and `certificate` (`file:`, `env:` or inline PEM): the demo's are `file:generated/client.key` and `file:generated/client.crt`. Keep the key readable by you only; the install script writes an issued key 0600 | Proves every GNAP request: `keyProof` `mtls` (the TLS client certificate), `httpsig` (RFC 9421 signatures) or `jwsd` (detached JWS). Every access token is bound to it; a bearer token is refused | The application entry's `gnapKey`, written when the install script registers the application: the certificate under `mtls`, the public JWK otherwise | Re-registering an existing application leaves `gnapKey` as it is. Under PKI trust, remove the certificate file and run the install script: it has a new one issued and sets `gnapKey`. It also replaces a self-signed certificate. Otherwise, set `gnapKey` to the new public key (`/admin-api/applications/set`) |
+| **GNAP access token** | Key-bound token | iya-sts, at the end of a grant | In process memory only (the demo's session table); never written or shown (pages show a SHA-256 fingerprint) | The grant's access rights (`ssf.read`, `ssf.manage` in the demo), sent with the key proof | It issued it | `ensure_fresh` rotates it through the management URI when 60 s or less are left; `POST /session/rotate` in the demo |
+| **Management access token** | Key-bound token | iya-sts, with the grant | Memory only | Rotating the access token (`rotate`) | It issued it | Comes back with each rotation |
+| **Continuation access token** | Key-bound token | iya-sts, with the pending and the finished grant | Memory only | Continuing the grant after interaction (`finish_redirect`), and revoking it (`revoke`, a DELETE of the continuation URI at sign-out) | It issued it | Per grant |
+| **The token for Shared Signals calls** | The GNAP access token above | — | Memory only | Stream discovery, creation, update, polls and verification (`ReceiverOpt::headers`): the demo signs each call with the latest grant's access token and the client instance key's proof | The `ssf.read` / `ssf.manage` rights on that token, which the install script lets the application grant (roles `SSF_READ`, `SSF_MANAGE`) | Follows the access token |
+| **The test user's password** (demo only) | Password | iya-sts generates it, or you give `GNAP_DEMO_USER_PASSWORD` | `demo/generated/<user>.password`, created 0600, only when iya-sts generated it; only the path is printed | Signing in to iya-sts as `gnap-demo-user` to try the demo | The directory | Set `GNAP_DEMO_USER_PASSWORD` and run the install script again: an existing user's password is set to it |
+
+### The embedded PEP's credentials
+
+The PEP is a principal of its own: the service account `pep-gnap-demo` (`--pep-name`), created with no password (`credential: none`) as a service account and put in the `remote-peps` group.
+
+| Credential | Type | Made or issued by | Where it lives | Used for | How iya-sts knows it | Rotation |
+|---|---|---|---|---|---|---|
+| **PEP key** | EC P-256 (RSA of 2048 bits or more is accepted) | Made locally with `openssl` by the install script (or by you); only its certificate request is sent | `pep.assertionKey`, relative to the configuration's directory; the demo's is `generated/pep-key.pem`, created 0600, never printed, never in the image | Signs an RFC 7523 JWT assertion (`iss` and `sub` the PEP's name) at the realm's `/oauth2/token` (client `sts-remote-pep`), and the DPoP proof of every call. That yields DPoP-bound tokens for the PEP's three audiences: `xacml:pep` (registration, heartbeat, catalogue, policies, `POST /xacml/pip`), `xacml:pep-audit` and `authzen:evaluate` | `POST /admin-api/xacml/issue-pep-credential` certifies the request and registers the key for the PEP's entry, binding the PEP to the application (`set-pep-application` alone rebinds) | Remove the key file and run the install script with `--pep`: it makes a new key and certifies it. The PEP reads the file again when it changes, and a changed key drops every token it held |
+| **The PEP's access tokens** | DPoP-bound | The realm's token endpoint | Memory only; never logged | The calls above, one token per audience, renewed 30 s before expiry | It issued them | Automatic |
+
+**The library refuses a PEP key that is the client instance key** (same JWK thumbprint): `pep.assertionKey is the GNAP client instance key (privateKey); the PEP needs a key of its own`. The two are different principals: the application proves GNAP requests and holds grants, while the PEP is a service account with its own entry, group and binding. A shared key would let either be taken for the other, and would tie a rotation or a compromise of one to both. See [docs/remote-pep.md](docs/remote-pep.md#credentials).
+
+### Install-time only
+
+| Credential | Where | Used for |
+|---|---|---|
+| `ADMIN_API_CLIENT_SECRET` (or `STS_ADMIN_API_CLIENT_SECRET`) | The environment of `scripts/configure_iya_sts.py` only; never stored, printed or passed on a command line (the live script passes it as `-e NAME`) | The secret of iya-sts's `sts-api-client`. It is sent by HTTP Basic to the realm's `/oauth2/token` (`client_credentials`, resource `<realm>/admin-api`) for a token with `admin:read admin:write`, which every `/admin-api` call carries. For one call alone, defining the realm's custom attribute `attr1`, the script mints a second token with `admin:read admin:security`; that needs the client to hold `SECURITY_ADMIN`, which iya-sts seeds |
+| `GNAP_DEMO_USER_PASSWORD` | Environment, optional | The test user's password (above) |
+
+The tokens minted from the secret live only while the script runs. The running demo needs neither.
+
+### Trust material
+
+- **`tlsCa`** (demo: `generated/idp-ca.pem`) is the iya-sts TLS listener's CA trust chain, public material. The install script writes it on every run (`GET /tls/server-certificate`, else the handshake) and prints the anchor's SHA-256; the demo image carries it from build time. The library verifies every connection to iya-sts with it: the grant endpoint, discovery and the ID token issuer's JWKS, and the Shared Signals transmitter. The embedded PEP uses it too unless `pep.tlsCa` names another. Each certificate in the file is an anchor; a pinned certificate counts only as the presented leaf, and the host name is always checked. `allowInsecure` does not turn verification off.
+- **What iya-sts verifies:** the client instance key's proof against `gnapKey` (and under PKI, the certificate's chain to the realm's client truststore and its binding to the application); the PEP's assertion and proofs against the key `issue-pep-credential` registered.
+- **What the library verifies:** the ID token assertion against `idTokenIssuer`'s JWKS (issuer, audience, time), and each Security Event Token against the transmitter's JWKS (issuer, audience, `typ`).
+
+### Development and product iya-sts
+
+- **GNAP mTLS trust**, `gnap.mtlsTrust`: `auto` is `pinned` in development and `pki` in product.
+  - **`pinned`**: iya-sts accepts the exact certificate registered in `gnapKey`, so a self-signed client certificate works.
+  - **`pki`**: a self-signed certificate is refused (`STS-GNAP-0287`). The certificate must chain to the realm's client truststore and be bound to the application.
+  - **The install script** asks the realm which model it uses. With `keyProof` `mtls` under `pki`, it has the realm issue the client certificate: `issue-tls-client-certificate`, `ec-p256`, subject `urn:sts:application:<id>`. It decrypts the one-time encrypted key with `openssl` into `privateKey`'s file (0600), writes the certificate and chain to `certificate`'s file, and registers the key as `gnapKey`. A realm-issued certificate already there is kept.
+  - **`httpsig` and `jwsd`** register a public JWK, and `gnap.mtlsTrust` does not apply to them.
+- **The listener CA:** a development iya-sts makes a new listener CA when it restarts. Run the install script again (it rewrites `tlsCa`'s file) and rebuild the demo image, or let the demo's start-time refresh fetch it (`TLS_CA_REFRESH`, on by default). In product the chain is stable.
+- **The PEP key** is certified by `issue-pep-credential` the same way in both modes.
+
 ## Embedded PEP (features `pep` and `local`)
 
 Ask iya-sts's authorization policy whether a signed-in person may act on a resource, through the embedded Remote PEP (the shared [`iya-pep`](https://github.com/rcbj/iya-pep-rust) crate; iya-sts [#1206](https://github.com/rcbj/iya-sts/issues/1206)). **[docs/remote-pep.md](docs/remote-pep.md) is the full guide**: setting up iya-sts, choosing `central` or `local`, every configuration member, obligations, policy-change events, operating it and troubleshooting.

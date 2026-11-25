@@ -44,6 +44,10 @@ The demo source is `src/bin/demo.rs`, ported from oidc-caep-risc-rust's feature/
 
 `src/http.rs` `Pinned` reads every PEM block of `tlsCa` as an anchor. The exact-match shortcut compares only the presented LEAF with the file's certificates (never any presented certificate with any file certificate: CA certificates are public) and still checks the name; otherwise webpki verifies the chain to an anchor and the name. `src/tests/trust_chain.rs` covers the script writing the chain, the library taking the file, every block as an anchor, a forged leaf before the real CAs refused, and the right chain with the wrong name refused. Every `ssl.SSLContext` the scripts make sets TLS 1.2 as the minimum.
 
+## Credentials
+
+README.md's `## Credentials` (the same headings in all four Rust libraries) lists every credential: the client instance key (`gnapKey`; self-signed and pinned in development, issued by `issue-tls-client-certificate` under `gnap.mtlsTrust` `pki`), the GNAP access, management and continuation tokens (memory only), the Shared Signals calls (signed with the latest grant's access token), the test user's password file, the PEP's service account and key, `ADMIN_API_CLIENT_SECRET` (install time only), and `tlsCa`. docs/remote-pep.md's `## Credentials` details the PEP half. Check a claim against the code before changing it, and never put a secret value in the docs.
+
 ## Embedded PEP
 
 #39 (iya-sts#1206 work item 8), behind the `pep` feature (`local` adds the engine): `src/pep.rs` wires in the shared `iya-pep` crate (rcbj/iya-pep-rust), following oidc-caep-risc-rust#46.
